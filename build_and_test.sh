@@ -133,7 +133,7 @@ if [[ $SKIP_BUILD -eq 1 ]]; then
 else
   log "========== Step 3/6: 编译 wheel (SOC=$SOC, LEGACY_EXTENSION=1) =========="
   log "这通常需要 10-20 分钟 (含 C++ 扩展编译), 请耐心等待..."
-  FLA_NPU_SOC="$SOC" FLA_NPU_BUILD_LEGACY_EXTENSION=1 \
+  FLA_NPU_SOC="$SOC" FLA_NPU_BUILD_LEGACY_EXTENSION=1 FLA_NPU_SKIP_ENV_CHECK=1 \
     python -m pip wheel --no-build-isolation --no-deps . -w dist
   ok "wheel 编译完成"
 fi
