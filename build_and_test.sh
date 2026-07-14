@@ -116,12 +116,12 @@ cd "$REPO_ROOT"
 log "仓库根目录: $REPO_ROOT"
 
 # ---------- Step 1: CANN env ----------
-log "========== Step 1/6: 设置 CANN 环境 =========="
+log "========== Step 1/7: 设置 CANN 环境 =========="
 source "$CANN_PATH/set_env.sh"
 ok "CANN env 已加载 (ASCEND_HOME_PATH=$ASCEND_HOME_PATH)"
 
 # ---------- Step 2: conda env ----------
-log "========== Step 2/6: 激活 conda 环境 [$CONDA_ENV] =========="
+log "========== Step 2/7: 激活 conda 环境 [$CONDA_ENV] =========="
 eval "$("$CONDA_BIN" shell.bash hook)"
 conda activate "$CONDA_ENV"
 ok "Python: $(python --version 2>&1) @ $(which python)"
@@ -131,7 +131,7 @@ ok "torch_npu: $(python -c 'import torch_npu; print(torch_npu.__version__)' 2>&1
 if [[ $SKIP_BUILD -eq 1 ]]; then
   warn "跳过 wheel 编译 (--skip-build)"
 else
-  log "========== Step 3/6: 编译 wheel (SOC=$SOC, LEGACY_EXTENSION=1) =========="
+  log "========== Step 3/7: 编译 wheel (SOC=$SOC, LEGACY_EXTENSION=1) =========="
   log "这通常需要 10-20 分钟 (含 C++ 扩展编译), 请耐心等待..."
   FLA_NPU_SOC="$SOC" FLA_NPU_BUILD_LEGACY_EXTENSION=1 FLA_NPU_SKIP_ENV_CHECK=1 \
     python -m pip wheel --no-build-isolation --no-deps . -w dist
@@ -149,27 +149,13 @@ ok "wheel: $WHEEL"
 if [[ $SKIP_INSTALL -eq 1 ]]; then
   warn "跳过 wheel 安装 (--skip-install)"
 else
-  log "========== Step 4/6: 安装 wheel =========="
+  log "========== Step 4/7: 安装 wheel =========="
   python -m pip install --force-reinstall --no-deps "$WHEEL"
   ok "wheel 安装完成"
 fi
 
-# ---------- Step 5: base precision test ----------
-if [[ $SKIP_BASE_TEST -eq 1 ]]; then
-  warn "跳过基础精度测试 (--skip-base-test)"
-else
-  log "========== Step 5/6: 8 个基础精度测试 =========="
-  cd torch_custom/fla_npu/test
-  python test_npu_mega_chunk_kda.py
-  cd "$REPO_ROOT"
-  ok "基础精度测试完成"
-fi
-
-# ---------- Step 6: pt end-to-end test ----------
-log "========== Step 6/6: pt 端到端精度测试 =========="
-
-# 6a. set vendor env (每次必须 source, 否则 aclnnMegaChunkKda not found)
-log "设置算子运行环境 (ASCEND_CUSTOM_OPP_PATH)..."
+# ---------- Step 5: set vendor env (必须! 否则 aclnnMegaChunkKda not found) ----------
+log "========== Step 5/7: 设置算子运行环境 (ASCEND_CUSTOM_OPP_PATH) =========="
 VENDOR_DIR=$(python -c "import fla_npu, os; print(os.path.join(os.path.dirname(fla_npu.__file__), 'opp', 'vendors', 'fla_npu_transformer'))")
 if [[ ! -f "$VENDOR_DIR/bin/set_env.bash" ]]; then
   err "vendor set_env.bash 不存在: $VENDOR_DIR/bin/set_env.bash"
@@ -179,7 +165,21 @@ fi
 source "$VENDOR_DIR/bin/set_env.bash"
 ok "算子运行环境已加载 (ASCEND_CUSTOM_OPP_PATH=$ASCEND_CUSTOM_OPP_PATH)"
 
-# 6b. run pt test
+# ---------- Step 6: base precision test ----------
+if [[ $SKIP_BASE_TEST -eq 1 ]]; then
+  warn "跳过基础精度测试 (--skip-base-test)"
+else
+  log "========== Step 6/7: 8 个基础精度测试 =========="
+  cd torch_custom/fla_npu/test
+  python test_npu_mega_chunk_kda.py
+  cd "$REPO_ROOT"
+  ok "基础精度测试完成"
+fi
+
+# ---------- Step 7: pt end-to-end test ----------
+log "========== Step 7/7: pt 端到端精度测试 =========="
+
+# 7a. run pt test
 log "运行 test_pt_kda.py..."
 log "  input  = $INPUT"
 log "  output = $OUTPUT"
