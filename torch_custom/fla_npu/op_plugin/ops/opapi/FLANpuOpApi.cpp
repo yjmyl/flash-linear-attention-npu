@@ -633,4 +633,49 @@ at::Tensor npu_chunk_local_cumsum(
     return out;
 }
 
+::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> npu_mega_chunk_kda(
+    const at::Tensor & q,
+    const at::Tensor & k,
+    const at::Tensor & v,
+    const at::Tensor & g,
+    const at::Tensor & beta,
+    const at::Tensor & mask_strict,
+    const at::Tensor & mask_incl,
+    const at::Tensor & minus_identity,
+    const at::Tensor & cu_seqlens,
+    int64_t num_matrices)
+{
+    // q: [1, HV, T, K] fp16 (head-major)
+    // v: [1, T, HV, V] fp16 (BSND)
+    // g: [1, T, HV, K] fp16 (BSND)
+    const int64_t HV = q.size(1);
+    const int64_t T  = q.size(2);
+    const int64_t K  = q.size(3);
+    const int64_t V  = v.size(3);
+    constexpr int64_t C = 128;  // compiled chunk size
+
+    const int64_t tc = num_matrices / HV;  // total chunks
+
+    at::Tensor out    = at::empty_like(v);                                       // [1,T,HV,V] fp16
+    at::Tensor g_sum  = at::empty(g.sizes(), g.options().dtype(at::kFloat));     // [1,T,HV,K] fp32
+    at::Tensor g_cs   = at::empty({1, HV, T, K}, g.options().dtype(at::kFloat)); // [1,HV,T,K] fp32
+    at::Tensor L      = at::empty({1, T, HV, C}, q.options());                   // [1,T,HV,C] fp16
+    at::Tensor A_inv  = at::empty({1, T, HV, C}, q.options());                   // [1,T,HV,C] fp16
+    at::Tensor u      = at::empty_like(v);                                       // [1,T,HV,V] fp16
+    at::Tensor w      = at::empty_like(g);                                       // [1,T,HV,K] fp16
+    at::Tensor s      = at::empty({tc, HV, K, V}, q.options());                  // [tc,HV,K,V] fp16
+    at::Tensor v_corr = at::empty_like(v);                                       // [1,T,HV,V] fp16
+
+    EXEC_NPU_CMD_EXT(
+        aclnnMegaChunkKda,
+        q, k, v, g, beta,
+        mask_strict, mask_incl, minus_identity, cu_seqlens, num_matrices,
+        out, g_sum, g_cs, L, A_inv, u, w, s, v_corr
+    );
+
+    return std::make_tuple(std::move(out), std::move(g_sum), std::move(g_cs),
+                           std::move(L), std::move(A_inv), std::move(u),
+                           std::move(w), std::move(s), std::move(v_corr));
+}
+
 }  // namespace op_api

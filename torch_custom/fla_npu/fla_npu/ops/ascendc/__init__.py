@@ -39,6 +39,7 @@ _ASCENDC_OPS = (
     "npu_recompute_w_u_fwd",
     "npu_chunk_scaled_dot_kkt",
     "npu_solve_tri",
+    "npu_mega_chunk_kda",
 )
 
 BACKWARD_OPS = {
@@ -325,6 +326,120 @@ def causal_conv1d(
     return Function.apply(x, weight, bias, conv_states)
 
 
+# ---------------------------------------------------------------------------
+# KDA mega-kernel helpers
+# ---------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=48)
+def _mega_chunk_kda_minus_identity(device_ty: str, device_index: int, chunk_size: int):
+    """Shared ``[C,C] fp16`` buffer with diagonal ``-1`` for tri_inverse."""
+    import torch
+    idx = device_index if device_index >= 0 else 0
+    dev = torch.device(device_ty, idx) if device_ty != "cpu" else torch.device("cpu")
+    t = torch.zeros(chunk_size, chunk_size, device=dev, dtype=torch.float16)
+    t.fill_diagonal_(-1)
+    return t
+
+
+@functools.lru_cache(maxsize=48)
+def _mega_chunk_kda_causal_masks(device_ty: str, device_index: int, chunk_size: int):
+    """Lower-triangle masks for intra-chunk KKT attention (rows>cols, rows>=cols)."""
+    import torch
+    idx = device_index if device_index >= 0 else 0
+    dev = torch.device(device_ty, idx) if device_ty != "cpu" else torch.device("cpu")
+    m_lower = torch.tril(torch.ones(chunk_size, chunk_size, device=dev), diagonal=-1).float()
+    m_full = torch.tril(torch.ones(chunk_size, chunk_size, device=dev), diagonal=0).float()
+    return m_lower, m_full
+
+
+def mega_chunk_kda(
+    q,
+    k,
+    v,
+    g,
+    beta,
+    cu_seqlens=None,
+    *,
+    chunk_size: int = 128,
+    return_final_state: bool = False,
+    return_all: bool = False,
+):
+    """Fused KDA mega-kernel: all six KDA stages in a single NPU launch.
+
+    Fuses gate_cumsum -> kkt -> solve_tril -> wy -> chunk_h -> chunk_o.
+
+    Args:
+        q, k:       ``[1, T, HV, K]`` fp16, GQA-expanded; ``q`` pre-scaled.
+        v:          ``[1, T, HV, V]`` fp16.
+        g:          ``[1, T, HV, K]`` fp16, raw per-dimension gate logits.
+        beta:       ``[1, T, HV]``    fp16, post-sigmoid beta.
+        cu_seqlens: ``int32`` cumulative sequence lengths, or ``None`` for one
+                    sequence of length ``T``.
+        chunk_size: Chunk size C (default 128, must match compiled GDN_C).
+        return_final_state: If True, also return ``[N_seq, HV, K, V]`` final states.
+        return_all: If True, return all 9 raw outputs as a tuple.
+
+    Returns:
+        ``out`` of shape ``[1, T, HV, V]`` fp16 by default.
+        ``(out, final_state)`` if ``return_final_state=True``.
+        9-tuple of all outputs if ``return_all=True``.
+    """
+    import torch
+
+    assert q.dtype == torch.float16 and v.dtype == torch.float16
+    dev = q.device
+    HV, K = q.shape[2], q.shape[3]
+    C = chunk_size
+    T = q.shape[1]
+
+    # Synthesise cu_seqlens for the single-sequence case
+    if cu_seqlens is None:
+        cu_seqlens = torch.tensor([0, T], dtype=torch.int32, device=dev)
+    elif cu_seqlens.dtype != torch.int32:
+        cu_seqlens = cu_seqlens.to(torch.int32)
+
+    N_seq = int(cu_seqlens.numel()) - 1
+
+    # Precomputed masks (cached per device/chunk_size)
+    dt = dev.type
+    di = dev.index if dev.index is not None else -1
+    mask_strict, mask_incl = _mega_chunk_kda_causal_masks(dt, di, C)
+    minus_id = _mega_chunk_kda_minus_identity(dt, di, C)
+
+    # Total chunks and num_matrices
+    cu_list = cu_seqlens.cpu().tolist()
+    tc = sum(
+        (cu_list[i + 1] - cu_list[i] + C - 1) // C
+        for i in range(len(cu_list) - 1)
+    )
+    num_matrices = tc * HV
+
+    # Head-major permutes (match the kernel's expected layout)
+    q_hm = q.permute(0, 2, 1, 3).contiguous()    # [1, HV, T, K]
+    k_hm = k.permute(0, 2, 1, 3).contiguous()    # [1, HV, T, K]
+    beta_hm = beta.permute(0, 2, 1).contiguous() # [1, HV, T]
+    v_c = v.contiguous()
+    g_c = g.contiguous()
+
+    out, g_sum, g_cs, L, A_inv, u, w, s, v_corr = _get_torch_op("npu_mega_chunk_kda")(
+        q_hm, k_hm, v_c, g_c, beta_hm,
+        mask_strict, mask_incl, minus_id, cu_seqlens,
+        num_matrices,
+    )
+
+    if return_all:
+        return out, g_sum, g_cs, L, A_inv, u, w, s, v_corr
+
+    if return_final_state:
+        seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
+        chunks_per_seq = (seq_lens.long() + C - 1) // C
+        last_chunk_idx = chunks_per_seq.cumsum(0) - 1
+        final_state = s[last_chunk_idx]  # [N_seq, HV, K, V]
+        return out, final_state
+
+    return out
+
+
 def install_torch_npu_ops_compat() -> None:
     """Expose wrappers through the legacy ``torch_npu.ops`` namespace."""
 
@@ -356,12 +471,21 @@ def install_legacy_torch_ops_warning() -> None:
         setattr(namespace, name, _LegacyTorchOpWarningWrapper(name, current))
 
 
+# Save custom wrapper implementations before the loop below overwrites them.
+_custom_fns = {
+    "fast_gelu_custom": fast_gelu_custom,
+    "causal_conv1d": causal_conv1d,
+    "mega_chunk_kda": mega_chunk_kda,
+}
+
 for _name in _ASCENDC_OPS:
     globals()[_name] = _make_raw_wrapper(_name)
     globals()[_strip_npu_prefix(_name)] = globals()[_name]
 
-globals()["fast_gelu_custom"] = fast_gelu_custom
-globals()["causal_conv1d"] = causal_conv1d
+# Restore custom wrappers (they add argument preprocessing that the raw
+# torch.ops.npu binding does not provide).
+for _name, _fn in _custom_fns.items():
+    globals()[_name] = _fn
 
 _prepare_direct_runtime(raise_on_error=False)
 

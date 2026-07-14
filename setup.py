@@ -254,12 +254,30 @@ def _check_build_environment():
         except Exception as exc:
             failures.append(f"triton: {exc}")
 
-        if triton_ascend_version:
-            print(f"[fla-npu build][OK] triton-ascend: {triton_ascend_version}")
-            _check_min_version(failures, "triton-ascend", triton_ascend_version, MIN_TRITON_ASCEND)
-            _check_triton_ascend_a5_compat(failures, triton_ascend_version)
+        if torch is not None:
+            _check_min_version(failures, "torch", getattr(torch, "__version__", ""), MIN_TORCH)
+        if torch_npu is not None:
+            if _env_flag("FLA_NPU_SKIP_ENV_CHECK"):
+                print(f"[fla-npu build][WARN] Skipping torch_npu GDN fix check (FLA_NPU_SKIP_ENV_CHECK set), version={getattr(torch_npu, '__version__', '')}")
+            else:
+                _check_torch_npu_gdn_fix(failures, getattr(torch_npu, "__version__", ""))
+
+        if _env_flag("FLA_NPU_SKIP_ENV_CHECK"):
+            print("[fla-npu build][WARN] Skipping triton/triton-ascend checks (FLA_NPU_SKIP_ENV_CHECK set)")
         else:
-            failures.append("triton-ascend distribution was not found")
+            triton_ascend_version = _distribution_version("triton-ascend")
+            try:
+                triton = importlib.import_module("triton")
+                print(f"[fla-npu build][OK] triton: {getattr(triton, '__file__', '<unknown>')}")
+            except Exception as exc:
+                failures.append(f"triton: {exc}")
+
+            if triton_ascend_version:
+                print(f"[fla-npu build][OK] triton-ascend: {triton_ascend_version}")
+                _check_min_version(failures, "triton-ascend", triton_ascend_version, MIN_TRITON_ASCEND)
+                _check_triton_ascend_a5_compat(failures, triton_ascend_version)
+            else:
+                failures.append("triton-ascend distribution was not found")
     else:
         print("[fla-npu build][OK] Skipping torch/torch_npu build-time checks for Python-only wheel")
 

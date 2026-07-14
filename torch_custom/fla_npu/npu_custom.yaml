@@ -43,6 +43,8 @@ custom:
     op_api: all_version
   - func: npu_solve_tri(Tensor x, *, int[]? cu_seqlens=None, int[]? chunk_indices=None, str layout="bsnd") -> Tensor
     op_api: all_version
+  - func: npu_mega_chunk_kda(Tensor q, Tensor k, Tensor v, Tensor g, Tensor beta, Tensor mask_strict, Tensor mask_incl, Tensor minus_identity, Tensor cu_seqlens, int num_matrices) -> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)
+    op_api: all_version
 
 autograd:
 
