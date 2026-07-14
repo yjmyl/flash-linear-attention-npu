@@ -245,18 +245,6 @@ def _check_build_environment():
         if torch is not None:
             _check_min_version(failures, "torch", getattr(torch, "__version__", ""), MIN_TORCH)
         if torch_npu is not None:
-            _check_torch_npu_gdn_fix(failures, getattr(torch_npu, "__version__", ""))
-
-        triton_ascend_version = _distribution_version("triton-ascend")
-        try:
-            triton = importlib.import_module("triton")
-            print(f"[fla-npu build][OK] triton: {getattr(triton, '__file__', '<unknown>')}")
-        except Exception as exc:
-            failures.append(f"triton: {exc}")
-
-        if torch is not None:
-            _check_min_version(failures, "torch", getattr(torch, "__version__", ""), MIN_TORCH)
-        if torch_npu is not None:
             if _env_flag("FLA_NPU_SKIP_ENV_CHECK"):
                 print(f"[fla-npu build][WARN] Skipping torch_npu GDN fix check (FLA_NPU_SKIP_ENV_CHECK set), version={getattr(torch_npu, '__version__', '')}")
             else:
