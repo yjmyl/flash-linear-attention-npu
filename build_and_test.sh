@@ -131,9 +131,10 @@ ok "torch_npu: $(python -c 'import torch_npu; print(torch_npu.__version__)' 2>&1
 if [[ $SKIP_BUILD -eq 1 ]]; then
   warn "跳过 wheel 编译 (--skip-build)"
 else
-  log "========== Step 3/6: 编译 wheel (SOC=$SOC) =========="
-  log "这通常需要 5-15 分钟, 请耐心等待..."
-  FLA_NPU_SOC="$SOC" python -m pip wheel --no-build-isolation --no-deps . -w dist
+  log "========== Step 3/6: 编译 wheel (SOC=$SOC, LEGACY_EXTENSION=1) =========="
+  log "这通常需要 10-20 分钟 (含 C++ 扩展编译), 请耐心等待..."
+  FLA_NPU_SOC="$SOC" FLA_NPU_BUILD_LEGACY_EXTENSION=1 \
+    python -m pip wheel --no-build-isolation --no-deps . -w dist
   ok "wheel 编译完成"
 fi
 
