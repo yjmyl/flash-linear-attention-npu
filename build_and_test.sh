@@ -32,6 +32,7 @@ CONDA_ENV="chw"
 SOC="ascend910b"
 CHUNK_SIZE=""
 SCALE=""
+CLAMP_GATE=""
 SKIP_BUILD=0
 SKIP_INSTALL=0
 SKIP_BASE_TEST=0
@@ -57,6 +58,7 @@ usage() {
                    910A5     = ascend950
   --chunk-size N   传给 test_pt_kda.py        (默认 128, 不传则用算子默认)
   --scale    F     传给 test_pt_kda.py        (默认不传, 脚本自动 1/sqrt(K))
+  --clamp-gate F  钳制 gate 下限              (如 -5.0; 默认不钳制)
   --skip-build     跳过 wheel 编译
   --skip-install   跳过 wheel 安装
   --skip-base-test 跳过 8 个基础精度测试
@@ -93,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --soc)          SOC="$2"; shift 2;;
     --chunk-size)   CHUNK_SIZE="$2"; shift 2;;
     --scale)        SCALE="$2"; shift 2;;
+    --clamp-gate)   CLAMP_GATE="$2"; shift 2;;
     --skip-build)       SKIP_BUILD=1; shift;;
     --skip-install)     SKIP_INSTALL=1; shift;;
     --skip-base-test)   SKIP_BASE_TEST=1; shift;;
@@ -189,6 +192,7 @@ log "  output = $OUTPUT"
 PT_ARGS=(--input "$INPUT" --output "$OUTPUT")
 [[ -n "$CHUNK_SIZE" ]] && PT_ARGS+=(--chunk-size "$CHUNK_SIZE")
 [[ -n "$SCALE" ]]      && PT_ARGS+=(--scale "$SCALE")
+[[ -n "$CLAMP_GATE" ]] && PT_ARGS+=(--clamp-gate "$CLAMP_GATE")
 
 cd torch_custom/fla_npu/test
 python test_pt_kda.py "${PT_ARGS[@]}"

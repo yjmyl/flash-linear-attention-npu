@@ -1,7 +1,7 @@
 """End-to-end KDA mega-kernel test using real model pt tensors.
 
 Usage on NPU:
-    source /root/miniconda3/envs/chw/lib/python3.13/site-packages/fla_npu/opp/vendors/fla_npu_transformer/bin/set_env.bash
+    source <site-packages>/fla_npu/opp/vendors/fla_npu_transformer/bin/set_env.bash
     python test_pt_kda.py --input /path/to/kda_debug_input_tensors_rank0.pt \
                           --output /path/to/kda_debug_output_tensors_rank0.pt
 
@@ -29,6 +29,24 @@ def _tensor_info(name: str, t):
         print(f"    {name:20s} shape={tuple(t.shape)} dtype={t.dtype}")
     else:
         print(f"    {name:20s} = {t!r}")
+
+
+def _print_range(name: str, t: torch.Tensor):
+    """Print min/max/mean/nan/inf for a tensor."""
+    if not isinstance(t, torch.Tensor) or t.numel() == 0:
+        print(f"    {name:12s}: <empty or non-tensor>")
+        return
+    has_nan = torch.isnan(t).any().item()
+    has_inf = torch.isinf(t).any().item()
+    finite = t.isfinite()
+    if finite.any():
+        mn = t[finite].min().item()
+        mx = t[finite].max().item()
+        mn_val = t.float().mean().item() if t.dtype != torch.int32 else 0.0
+        print(f"    {name:12s}: min={mn:+.6f}  max={mx:+.6f}  mean={mn_val:+.6f}  "
+              f"nan={has_nan}  inf={has_inf}")
+    else:
+        print(f"    {name:12s}: ALL non-finite  nan={has_nan}  inf={has_inf}")
 
 
 def _to_fp16(t: torch.Tensor) -> torch.Tensor:
@@ -80,6 +98,9 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=128)
     parser.add_argument("--scale", type=float, default=None,
                         help="q scale; default = 1/sqrt(K)")
+    parser.add_argument("--clamp-gate", type=float, default=None,
+                        help="clamp gate g to [lower_bound, upper_bound]; "
+                             "e.g. --clamp-gate -5.0 clamps g >= -5.0")
     args = parser.parse_args()
 
     # ---- 1. Load pt ----
@@ -96,6 +117,14 @@ def main():
     for k, v in out_ref.items():
         _tensor_info(k, v)
 
+    # Print metadata
+    print("\n  Metadata from pt:")
+    print(f"    safe_gate   = {inp.get('safe_gate')}")
+    print(f"    lower_bound = {inp.get('lower_bound')}")
+    print(f"    mode        = {inp.get('mode')}")
+    print(f"    step        = {inp.get('step')}")
+    print(f"    layer       = {inp.get('layer')}")
+
     # ---- 2. Extract & preprocess ----
     print("\n" + "=" * 60)
     print("2. Preprocessing")
@@ -108,18 +137,59 @@ def main():
     beta = inp["beta"]
     cu_seqlens = inp.get("cu_seqlens")
 
+    # Print value ranges BEFORE conversion
+    print("\n  --- Value ranges (BEFORE dtype conversion) ---")
+    _print_range("q", q)
+    _print_range("k", k)
+    _print_range("v", v)
+    _print_range("g", g)
+    _print_range("beta", beta)
+
+    # Gate-specific analysis
+    if isinstance(g, torch.Tensor):
+        print("\n  --- Gate analysis ---")
+        g_finite = g.float()
+        n_pos = (g_finite > 0).sum().item()
+        n_gt11 = (g_finite > 11.0).sum().item()
+        n_lt_neg11 = (g_finite < -11.0).sum().item()
+        n_total = g.numel()
+        print(f"    g > 0:    {n_pos}/{n_total} ({100*n_pos/n_total:.2f}%)")
+        print(f"    g > 11:   {n_gt11}/{n_total} (exp would overflow fp16)")
+        print(f"    g < -11:  {n_lt_neg11}/{n_total} (exp → 0 in fp16, underflow)")
+        # Check per-head gate stats
+        for h in range(g.shape[2]):
+            gh = g[0, :, h, :].float()
+            print(f"    head {h}: g min={gh.min().item():+.4f}  max={gh.max().item():+.4f}  "
+                  f"mean={gh.mean().item():+.4f}")
+
     # dtype → fp16
     q = _to_fp16(q)
     k = _to_fp16(k)
     v = _to_fp16(v)
     g = _to_fp16(g)
     beta = _to_fp16(beta)
-    print("  dtype → fp16 done")
+    print("\n  dtype → fp16 done")
+
+    # Print value ranges AFTER conversion
+    print("\n  --- Value ranges (AFTER fp16 conversion) ---")
+    _print_range("q", q)
+    _print_range("k", k)
+    _print_range("v", v)
+    _print_range("g", g)
+    _print_range("beta", beta)
+
+    # Optional gate clamping
+    if args.clamp_gate is not None:
+        lb = args.clamp_gate
+        n_clamped = (g < lb).sum().item()
+        g = g.clamp(min=lb)
+        print(f"\n  Gate clamped to [{lb}, +inf): {n_clamped} elements affected")
+        _print_range("g (clamped)", g)
 
     # scale
     K = q.shape[-1]
     scale = args.scale if args.scale is not None else float(K ** -0.5)
-    print(f"  scale = {scale:.6f}  (K={K})")
+    print(f"\n  scale = {scale:.6f}  (K={K})")
     q = q * scale
 
     # GQA expand
@@ -178,6 +248,11 @@ def main():
     print(f"  out          shape={tuple(out.shape)} dtype={out.dtype}")
     print(f"  final_state  shape={tuple(final_state.shape)} dtype={final_state.dtype}")
 
+    # Print NPU output ranges
+    print("\n  --- NPU output ranges ---")
+    _print_range("out", out)
+    _print_range("final_state", final_state)
+
     # ---- 4. Compare with reference ----
     print("\n" + "=" * 60)
     print("4. Comparing with reference")
@@ -187,6 +262,10 @@ def main():
     if o_ref.dtype != torch.float16:
         o_ref = o_ref.to(torch.float16)
     o_ref = o_ref.to(dev)
+
+    # Print reference output ranges
+    print("  --- Reference output ranges ---")
+    _print_range("o_ref", o_ref)
 
     # Shape check
     if out.shape != o_ref.shape:
@@ -203,7 +282,7 @@ def main():
 
     diff = (out_cmp - o_ref).float()
     abs_diff = diff.abs()
-    print(f"  o: abs_diff max={abs_diff.max().item():.6f}  mean={abs_diff.mean().item():.6f}")
+    print(f"\n  o: abs_diff max={abs_diff.max().item():.6f}  mean={abs_diff.mean().item():.6f}")
     _stats("o_rel", diff, o_ref.float())
 
     # recurrent_state
@@ -211,14 +290,25 @@ def main():
     if isinstance(rs_ref, torch.Tensor):
         rs_ref = rs_ref.to(dev).float()
         fs = final_state.float()
+        print(f"\n  --- recurrent_state comparison ---")
+        _print_range("rs_ref", rs_ref)
+        _print_range("final_state", fs)
         if fs.shape == rs_ref.shape:
             rs_diff = (fs - rs_ref).abs()
             print(f"  recurrent_state: abs_diff max={rs_diff.max().item():.6f}  "
                   f"mean={rs_diff.mean().item():.6f}")
             _stats("rs_rel", fs - rs_ref, rs_ref)
+
+            # Per-sequence comparison
+            n_seq = fs.shape[0]
+            for s_idx in range(min(n_seq, 4)):
+                seq_diff = (fs[s_idx] - rs_ref[s_idx]).abs()
+                seq_valid = torch.isfinite(fs[s_idx]) & torch.isfinite(rs_ref[s_idx])
+                if seq_valid.any():
+                    print(f"    seq {s_idx}: max_abs_diff={seq_diff[seq_valid].max().item():.6f}  "
+                          f"mean_abs_diff={seq_diff[seq_valid].mean().item():.6f}")
         else:
             print(f"  recurrent_state shape mismatch: out={tuple(fs.shape)} vs ref={tuple(rs_ref.shape)}")
-            # Try comparing just the last chunk state if shapes allow
             print(f"  (final_state dump for manual inspection)")
             print(f"    final_state[0,0,:3,:3] = \n{fs[0,0,:3,:3]}")
             print(f"    ref[0,0,:3,:3] = \n{rs_ref[0,0,:3,:3]}")
@@ -231,14 +321,19 @@ def main():
     if valid.any():
         rel = (diff[valid].abs() / o_ref.float()[valid].abs())
         max_rel = rel.max().item()
+        mean_rel = rel.mean().item()
         if max_rel < 0.05:
-            print(f"  ✅ PASS  (max_rel={max_rel:.6f} < 5%)")
+            print(f"  ✅ PASS  (max_rel={max_rel:.6f}  mean_rel={mean_rel:.6f})")
+            sys.exit(0)
         elif max_rel < 0.15:
-            print(f"  ⚠️  MARGINAL  (max_rel={max_rel:.6f} < 15%)")
+            print(f"  ⚠️  MARGINAL  (max_rel={max_rel:.6f}  mean_rel={mean_rel:.6f})")
+            sys.exit(1)
         else:
-            print(f"  ❌ FAIL  (max_rel={max_rel:.6f} >= 15%)")
+            print(f"  ❌ FAIL  (max_rel={max_rel:.6f}  mean_rel={mean_rel:.6f})")
+            sys.exit(1)
     else:
         print("  ❌ Cannot evaluate — no valid elements")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
