@@ -106,6 +106,10 @@ def main():
                         help="treat pt 'g' as final gate (skip A_log/dt_bias transform). "
                              "By default we apply g = -A_log.exp()*softplus(a+dt_bias) since "
                              "the pt dumps raw gate logits, not the final (always-negative) gate.")
+    parser.add_argument("--no-qk-l2norm", action="store_true",
+                        help="skip Q/K L2 normalization. By default we apply F.normalize(q/k, p=2, dim=-1) "
+                             "to match the model's use_qk_l2norm_in_kernel=True (flash_gated_delta_rule.py:813-815). "
+                             "The pt file dumps pre-l2norm q/k; the kernel does NOT do l2norm internally.")
     args = parser.parse_args()
 
     # ---- 1. Load pt ----
@@ -255,6 +259,20 @@ def main():
         g = g.clamp(min=lb)
         print(f"\n  Gate clamped to [{lb}, +inf): {n_clamped} elements affected")
         _print_range("g (clamped)", g)
+
+    # Q/K L2 normalization (matches model's use_qk_l2norm_in_kernel=True)
+    # The model applies l2norm_fwd(q) and l2norm_fwd(k) BEFORE the kernel call
+    # (flash_gated_delta_rule.py:813-815). The pt file dumps pre-l2norm q/k.
+    # The kernel C++ code does NOT contain any l2norm logic.
+    if not args.no_qk_l2norm:
+        q = F.normalize(q, p=2, dim=-1, eps=1e-6)
+        k = F.normalize(k, p=2, dim=-1, eps=1e-6)
+        print("\n  Applied L2 normalization to Q and K "
+              "(matching use_qk_l2norm_in_kernel=True)")
+        _print_range("q (l2norm)", q)
+        _print_range("k (l2norm)", k)
+    else:
+        print("\n  Skipped Q/K L2 normalization (--no-qk-l2norm)")
 
     # scale
     K = q.shape[-1]
