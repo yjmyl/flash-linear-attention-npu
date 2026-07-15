@@ -10,7 +10,7 @@
 #   --conda   conda 可执行文件路径       (默认 ~/miniconda3/bin/conda)
 #   --env     conda 环境名               (默认 chw)
 #   --soc     目标芯片                   (默认 ascend910b; A3=ascend910_93, A5=ascend950)
-#   --chunk-size  传给 test_pt_kda.py    (默认 128, 与算子内置一致)
+#   --chunk-size  传给 test_pt_kda.py    (默认 64, 与模型 flash_gated_delta_rule 一致)
 #   --scale       传给 test_pt_kda.py    (默认不传, 脚本自动 1/sqrt(K))
 #   --skip-build      跳过 wheel 编译 (已编译过时复用 dist/)
 #   --skip-install    跳过 wheel 安装
@@ -30,7 +30,7 @@ CANN_PATH="/usr/local/Ascend/ascend-toolkit"
 CONDA_BIN="$HOME/miniconda3/bin/conda"
 CONDA_ENV="chw"
 SOC="ascend910b"
-CHUNK_SIZE=""
+CHUNK_SIZE="64"
 SCALE=""
 CLAMP_GATE=""
 SKIP_BUILD=0
@@ -56,7 +56,7 @@ usage() {
                    910B 系列 = ascend910b
                    910A3     = ascend910_93
                    910A5     = ascend950
-  --chunk-size N   传给 test_pt_kda.py        (默认 128, 不传则用算子默认)
+  --chunk-size N   传给 test_pt_kda.py        (默认 64, 与模型一致)
   --scale    F     传给 test_pt_kda.py        (默认不传, 脚本自动 1/sqrt(K))
   --clamp-gate F  钳制 gate 下限              (如 -5.0; 默认不钳制)
   --skip-build     跳过 wheel 编译

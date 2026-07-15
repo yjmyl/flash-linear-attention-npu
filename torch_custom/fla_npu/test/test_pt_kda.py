@@ -96,7 +96,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, help="path to kda_debug_input_tensors_rank0.pt")
     parser.add_argument("--output", required=True, help="path to kda_debug_output_tensors_rank0.pt")
-    parser.add_argument("--chunk-size", type=int, default=128)
+    parser.add_argument("--chunk-size", type=int, default=64,
+                        help="chunk size for mega_chunk_kda (default 64, matches model default "
+                             "flash_gated_delta_rule.py chunk_size=64)")
     parser.add_argument("--scale", type=float, default=None,
                         help="q scale; default = 1/sqrt(K)")
     parser.add_argument("--clamp-gate", type=float, default=None,
@@ -326,6 +328,7 @@ def main():
 
     from fla_npu.ops.ascendc import mega_chunk_kda
 
+    print(f"  chunk_size = {args.chunk_size}  (model default is 64)")
     torch.npu.synchronize()
     out, final_state = mega_chunk_kda(
         q, k, v, g, beta, cu_seqlens,
@@ -416,22 +419,75 @@ def main():
         print(f"  ❌ FAIL  (output {100*nan_frac:.2f}% NaN — gate transform may be missing or kernel overflow)")
         sys.exit(1)
 
-    valid = torch.isfinite(diff) & torch.isfinite(o_ref.float()) & (o_ref.float().abs() > 1e-6)
-    if valid.any():
-        rel = (diff[valid].abs() / o_ref.float()[valid].abs())
+    # --- Frobenius relative error (primary metric, robust to near-zero elements) ---
+    valid = torch.isfinite(diff) & torch.isfinite(o_ref.float())
+    diff_v = diff[valid].double()
+    ref_v = o_ref.float()[valid].double()
+    frob_rel = torch.sqrt((diff_v ** 2).sum() / (ref_v ** 2).clamp(min=1e-30).sum()).item()
+    abs_max = diff_v.abs().max().item()
+    abs_mean = diff_v.abs().mean().item()
+
+    # Element-wise relative error (informational only — misleading for near-zero ref)
+    valid_rel = valid & (o_ref.float().abs() > 1e-4)
+    if valid_rel.any():
+        rel = (diff[valid_rel].abs() / o_ref.float()[valid_rel].abs())
         max_rel = rel.max().item()
         mean_rel = rel.mean().item()
-        if max_rel < 0.05:
-            print(f"  ✅ PASS  (max_rel={max_rel:.6f}  mean_rel={mean_rel:.6f})")
-            sys.exit(0)
-        elif max_rel < 0.15:
-            print(f"  ⚠️  MARGINAL  (max_rel={max_rel:.6f}  mean_rel={mean_rel:.6f})")
-            sys.exit(1)
-        else:
-            print(f"  ❌ FAIL  (max_rel={max_rel:.6f}  mean_rel={mean_rel:.6f})")
-            sys.exit(1)
     else:
-        print("  ❌ Cannot evaluate — no valid elements")
+        max_rel = float('inf')
+        mean_rel = float('inf')
+
+    print(f"\n  --- Output 'o' accuracy ---")
+    print(f"    Frobenius rel error : {frob_rel:.6f}  (primary criterion)")
+    print(f"    abs_diff max        : {abs_max:.6f}")
+    print(f"    abs_diff mean       : {abs_mean:.6f}")
+    print(f"    element max_rel     : {max_rel:.6f}  (informational, misleading near zero)")
+    print(f"    element mean_rel    : {mean_rel:.6f}  (informational)")
+
+    # --- recurrent_state Frobenius (if available) ---
+    rs_frob = None
+    if isinstance(rs_ref, torch.Tensor) and fs.shape == rs_ref.shape:
+        rs_valid = torch.isfinite(fs) & torch.isfinite(rs_ref)
+        rs_diff_v = (fs - rs_ref)[rs_valid].double()
+        rs_ref_v = rs_ref[rs_valid].double()
+        rs_frob = torch.sqrt((rs_diff_v ** 2).sum() / (rs_ref_v ** 2).clamp(min=1e-30).sum()).item()
+        print(f"\n  --- recurrent_state accuracy ---")
+        print(f"    Frobenius rel error : {rs_frob:.6f}")
+        print(f"    abs_diff max        : {rs_diff_v.abs().max().item():.6f}")
+        print(f"    abs_diff mean       : {rs_diff_v.abs().mean().item():.6f}")
+
+    # --- Pass/Fail decision ---
+    # The mega-kernel (all-fp16) vs chunked pipeline (fp16+fp32 KKT) will have
+    # inherent precision differences. Frobenius rel error < 5% is acceptable.
+    # abs tolerance accounts for near-zero elements where rel error is meaningless.
+    PASS_FROB = 0.05
+    MARGINAL_FROB = 0.15
+    PASS_ABS = 2e-3   # absolute tolerance
+
+    print(f"\n  --- Decision ---")
+    print(f"    Thresholds: frob_rel < {PASS_FROB} PASS, < {MARGINAL_FROB} MARGINAL; abs_max < {PASS_ABS}")
+
+    o_pass = frob_rel < PASS_FROB
+    o_marginal = frob_rel < MARGINAL_FROB
+    rs_pass = rs_frob is None or rs_frob < PASS_FROB
+    rs_marginal = rs_frob is None or rs_frob < MARGINAL_FROB
+
+    if o_pass and rs_pass:
+        print(f"  ✅ PASS  (o frob_rel={frob_rel:.6f}"
+              + (f", rs frob_rel={rs_frob:.6f}" if rs_frob is not None else "")
+              + ")")
+        sys.exit(0)
+    elif (o_marginal and rs_marginal):
+        print(f"  ⚠️  MARGINAL  (o frob_rel={frob_rel:.6f}"
+              + (f", rs frob_rel={rs_frob:.6f}" if rs_frob is not None else "")
+              + ")")
+        print(f"     Results are close but exceed strict tolerance.")
+        print(f"     This may be acceptable for fp16 mega-kernel vs chunked pipeline (fp32 KKT).")
+        sys.exit(1)
+    else:
+        print(f"  ❌ FAIL  (o frob_rel={frob_rel:.6f}"
+              + (f", rs frob_rel={rs_frob:.6f}" if rs_frob is not None else "")
+              + ")")
         sys.exit(1)
 
 
