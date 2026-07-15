@@ -17,6 +17,7 @@ import os
 import sys
 
 import torch
+import torch.nn.functional as F
 import torch_npu  # noqa: F401  (registers npu device)
 
 
@@ -101,6 +102,10 @@ def main():
     parser.add_argument("--clamp-gate", type=float, default=None,
                         help="clamp gate g to [lower_bound, upper_bound]; "
                              "e.g. --clamp-gate -5.0 clamps g >= -5.0")
+    parser.add_argument("--no-gate-transform", action="store_true",
+                        help="treat pt 'g' as final gate (skip A_log/dt_bias transform). "
+                             "By default we apply g = -A_log.exp()*softplus(a+dt_bias) since "
+                             "the pt dumps raw gate logits, not the final (always-negative) gate.")
     args = parser.parse_args()
 
     # ---- 1. Load pt ----
@@ -137,6 +142,13 @@ def main():
     beta = inp["beta"]
     cu_seqlens = inp.get("cu_seqlens")
 
+    # Pull gate-transform params if present (pt dumps raw gate logits `a`,
+    # not the final always-negative gate `g = -A_log.exp()*softplus(a+dt_bias)`).
+    A_log = inp.get("A_log")
+    dt_bias = inp.get("dt_bias")
+    safe_gate = inp.get("safe_gate", False)
+    lower_bound = inp.get("lower_bound", None)
+
     # Print value ranges BEFORE conversion
     print("\n  --- Value ranges (BEFORE dtype conversion) ---")
     _print_range("q", q)
@@ -147,7 +159,7 @@ def main():
 
     # Gate-specific analysis
     if isinstance(g, torch.Tensor):
-        print("\n  --- Gate analysis ---")
+        print("\n  --- Gate analysis (raw pt 'g') ---")
         g_finite = g.float()
         n_pos = (g_finite > 0).sum().item()
         n_gt11 = (g_finite > 11.0).sum().item()
@@ -161,6 +173,64 @@ def main():
             gh = g[0, :, h, :].float()
             print(f"    head {h}: g min={gh.min().item():+.4f}  max={gh.max().item():+.4f}  "
                   f"mean={gh.mean().item():+.4f}")
+
+    # ---- Gate transformation: raw logit `a` → final gate `g` ----
+    # Model formula (flash_gated_delta_rule.py:1102):
+    #   g = -A_log.float().exp() * softplus(a.float() + dt_bias)
+    # The pt file's `g` field is the raw per-dimension gate logit `a` (can be
+    # positive), NOT the final gate (which is always ≤ 0).  KDA kernels and the
+    # reference implementation both assume gate ≤ 0 (they compute exp(g_cs)
+    # directly, which overflows for positive g).  We must apply the transform
+    # here so the kernel receives the same always-negative gate the model
+    # produces at inference time.
+    if not args.no_gate_transform and isinstance(A_log, torch.Tensor) and isinstance(dt_bias, torch.Tensor):
+        print("\n  --- Gate transformation: a → g = -A_log.exp()*softplus(a+dt_bias) ---")
+        a = g.float()                                   # [1, T, HV, K]
+        A = A_log.float()                               # [HV]
+        db = dt_bias.float()                            # [HV*K] or [HV]
+
+        HV, K = a.shape[2], a.shape[3]
+        print(f"    a        shape={tuple(a.shape)}")
+        print(f"    A_log    shape={tuple(A.shape)}  values={A.tolist()}")
+        print(f"    dt_bias  shape={tuple(db.shape)}")
+
+        # Reshape dt_bias to broadcast against a [1, T, HV, K].
+        if db.numel() == HV * K:
+            db = db.view(1, 1, HV, K)
+        elif db.numel() == HV:
+            db = db.view(1, 1, HV, 1)
+        else:
+            print(f"    ⚠️  dt_bias numel={db.numel()} does not match HV={HV} or HV*K={HV*K}; "
+                  "skipping transform")
+            db = None
+
+        if db is not None:
+            A_b = A.view(1, 1, HV, 1)                   # [1, 1, HV, 1]
+            g = -A_b.exp() * F.softplus(a + db)         # [1, T, HV, K], always ≤ 0
+            print(f"    transformed g shape={tuple(g.shape)}")
+            _print_range("g (transformed)", g)
+
+            # safe_gate clamp (matches model's safe_gate=True, lower_bound=-5.0)
+            if safe_gate and lower_bound is not None:
+                n_clamped = (g < lower_bound).sum().item()
+                g = g.clamp(min=float(lower_bound))
+                print(f"    safe_gate clamp to [{lower_bound}, +inf): "
+                      f"{n_clamped} elements clamped")
+                _print_range("g (clamped)", g)
+
+            # Re-run per-head stats on the final gate
+            print("\n  --- Gate analysis (after transform) ---")
+            g_finite = g.float()
+            n_pos = (g_finite > 0).sum().item()
+            n_total = g.numel()
+            print(f"    g > 0:    {n_pos}/{n_total} ({100*n_pos/n_total:.2f}%)  (should be 0%)")
+            for h in range(g.shape[2]):
+                gh = g[0, :, h, :].float()
+                print(f"    head {h}: g min={gh.min().item():+.4f}  max={gh.max().item():+.4f}  "
+                      f"mean={gh.mean().item():+.4f}")
+    elif not args.no_gate_transform:
+        print("\n  ⚠️  pt file missing A_log/dt_bias — cannot apply gate transform. "
+              "Treating 'g' as final gate (may cause NaN if g contains positive values).")
 
     # dtype → fp16
     q = _to_fp16(q)
@@ -317,6 +387,17 @@ def main():
     print("\n" + "=" * 60)
     print("5. Verdict")
     print("=" * 60)
+
+    # Explicit NaN/Inf fraction check — if output is mostly non-finite, FAIL hard.
+    n_total = out_cmp.numel()
+    n_nan = torch.isnan(out_cmp.float()).sum().item()
+    n_inf = torch.isinf(out_cmp.float()).sum().item()
+    nan_frac = n_nan / n_total if n_total > 0 else 1.0
+    print(f"  out: {n_nan}/{n_total} NaN ({100*nan_frac:.2f}%), {n_inf}/{n_total} Inf")
+    if nan_frac > 0.01:
+        print(f"  ❌ FAIL  (output {100*nan_frac:.2f}% NaN — gate transform may be missing or kernel overflow)")
+        sys.exit(1)
+
     valid = torch.isfinite(diff) & torch.isfinite(o_ref.float()) & (o_ref.float().abs() > 1e-6)
     if valid.any():
         rel = (diff[valid].abs() / o_ref.float()[valid].abs())
