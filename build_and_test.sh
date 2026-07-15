@@ -162,7 +162,10 @@ if [[ ! -f "$VENDOR_DIR/bin/set_env.bash" ]]; then
   err "可能 wheel 未正确安装, 请去掉 --skip-install 重试"
   exit 1
 fi
+ok "vendor set_env.bash 存在: $VENDOR_DIR/bin/set_env.bash"
+set +u
 source "$VENDOR_DIR/bin/set_env.bash"
+set -u
 ok "算子运行环境已加载 (ASCEND_CUSTOM_OPP_PATH=$ASCEND_CUSTOM_OPP_PATH)"
 
 # ---------- Step 6: base precision test ----------
