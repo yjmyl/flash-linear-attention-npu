@@ -669,9 +669,24 @@ Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 �
 
 ## 6. 下一小步
 
-只提交本地 tag 创建记录：暂存本文件和 `GDN_PHASE_VERSION_ARCHIVE_A2.md`，创建普通 commit
-`docs(gdn): record phase 3 tag`，登记 tag object `b2615917...`、peeled commit `7fb8f05...` 和固定
-message。提交后核对两文件清单并刷新本文件；本小步不 push、不构建或运行 NPU。
+只做 Phase 3 远端 branch 归档：先只读确认 `chw/gdn-a2-phase-archive` 仍为 `2b8161d...`、远端
+`gdn-a2-phase3` 不存在、Phase 2 tag object/peeled commit 未移动，且远端 branch 是本地 HEAD 的
+祖先；随后仅显式 fast-forward push `gdn-a2-phase-archive`，不推任何 tag。推送后只读回查 branch
+并刷新本文件；本小步不推 tag、不构建或运行 NPU。
+
+### Phase 3 tag 元数据 commit（已完成）
+
+已创建普通元数据 commit：
+
+```text
+commit:  61f01ad306e6087b87a198190b18b2c2702c79ad
+parent:  6537c5bed9b2f179cd520e29b0ad779fd1611991
+subject: docs(gdn): record phase 3 tag
+files:   GDN_CURRENT_STATUS_A2.md, GDN_PHASE_VERSION_ARCHIVE_A2.md
+```
+
+没有 amend、push、构建或运行 NPU。本地 tag 仍指向不可变实现 commit `7fb8f05...`。下一层只推
+归档 branch，不使用 `--tags`/`--follow-tags`，Phase 3 tag 留到 branch 验证后的独立小步。
 
 ### Phase 3 本地不可变 tag（已完成）
 
