@@ -669,10 +669,31 @@ Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 �
 
 ## 6. 下一小步
 
-只创建本地不可变 annotated tag `gdn-a2-phase3`：先只读确认本地/远端同名 tag 均不存在，
-`gdn-a2-phase2^{commit}` 仍为 `f2a4b46...`，再将新 tag 明确指向实现里程碑 `7fb8f05...`，tag
-message 固定为 `A2 GDN Phase 3 cumulative fusion`。创建后核对 tag object 和 peeled commit 并刷新
-本文件；本小步不 push、不构建或运行 NPU。
+只提交本地 tag 创建记录：暂存本文件和 `GDN_PHASE_VERSION_ARCHIVE_A2.md`，创建普通 commit
+`docs(gdn): record phase 3 tag`，登记 tag object `b2615917...`、peeled commit `7fb8f05...` 和固定
+message。提交后核对两文件清单并刷新本文件；本小步不 push、不构建或运行 NPU。
+
+### Phase 3 本地不可变 tag（已完成）
+
+修正后的前置只读门禁确认：
+
+- 本地、远端均不存在 `gdn-a2-phase3`；
+- 本地与远端 `gdn-a2-phase2^{}` 均为
+  `f2a4b467f37887824106633524bd0b1c45737e1c`，旧 tag 未移动；
+- `TAG_PRECHECK=PASS`。
+
+随后创建本地 annotated tag：
+
+```text
+name:    gdn-a2-phase3
+object:  b26159171f8aa0b1340f3f927412795853dc72e9
+type:    tag
+peeled:  7fb8f05b59ab56a8392e0f6c9bef071714894826
+message: A2 GDN Phase 3 cumulative fusion
+```
+
+tag 明确指向实现与验收里程碑，不指向后续元数据 commit。没有 push、构建或运行 NPU；下一层只
+提交两份 tag 元数据文档。
 
 ### Phase 3 精确里程碑元数据 commit（已完成）
 
@@ -687,6 +708,12 @@ files:   GDN_CURRENT_STATUS_A2.md, GDN_PHASE_VERSION_ARCHIVE_A2.md
 
 提交清单严格为两份文档，未 amend 实现里程碑，未创建 tag、push、构建或运行 NPU。下一层只读
 核对 tag 命名空间后，在本地创建指向 `7fb8f05...` 的 annotated tag，不指向元数据 commit。
+
+首次 tag 前置只读检查没有创建 tag。它确认本地/远端均不存在 `gdn-a2-phase3`，远端 Phase 2
+annotated tag object 仍为 `e13c6ed...`；但检查器错误地把文档短 SHA `f2a4b46` 手工扩成了错误的
+完整 SHA，从而把实际本地 peeled commit
+`f2a4b467f37887824106633524bd0b1c45737e1c` 误报为 tag 移动。该次没有本地或远端变更。
+重试必须直接比较本地与远端 `gdn-a2-phase2^{}` 的 Git 派生完整 SHA，不再硬编码猜测值。
 
 ### Phase 3 实现与验收里程碑 commit（已完成）
 
