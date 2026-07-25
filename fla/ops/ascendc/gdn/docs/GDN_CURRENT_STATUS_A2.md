@@ -645,14 +645,34 @@ Phase 1 旧路径失败，长序列相对性能和相对显存门禁不可判定
 - `torch_custom/fla_npu/test/run_gdn_phase2_performance_matrix.py`：冻结的性能矩阵 runner。
 - `.codex_phase2_*`、`.phase*.json`：临时脚本和中间结果，不进入里程碑 commit。
 
+### Phase 2 归档推送记录
+
+只将 Phase 2 性能收口追加 commit `2b8161d` fast-forward 推送到
+`chw/gdn-a2-phase-archive`。推送前确认本地 `HEAD=2b8161d`、远端分支仍为基线 `f2a4b46`、
+`gdn-a2-phase2` tag 仍指向 `f2a4b46`；不得 force-push、不得推送或移动 tag。推送内容只包含
+已核验的 7 个正式文件；本地 `.learnings/`、`.codex_phase2_*`、`.phase*.json` 保持未提交。
+推送失败立即停止，不修改远端历史；成功后先刷新本文件，再将唯一下一小步改为 Phase 3 启动卡。
+
+首次远端只读核对执行 `git ls-remote chw` 时，本机到 `github.com:443` 连接超时并返回
+exit code `128`。该失败发生在 push 前，远端没有任何变更；本地 `HEAD=2b8161d`，且
+`f2a4b46` 已确认是其祖先，本地 annotated tag `gdn-a2-phase2` 仍解析到 commit `f2a4b46`。
+继续本小步前必须先恢复 GitHub 连通性并重新读取远端 branch/tag；不得跳过只读核对直接推送。
+
+随后使用只在本机监听的临时 SOCKS 隧道经 A2 出网，本地 Git credential helper 仍直接完成
+GitHub 认证。只读核对确认远端 branch 为 `f2a4b46`、annotated tag 对象为 `e13c6ed`；普通
+fast-forward push 将 `chw/gdn-a2-phase-archive` 更新到 `2b8161d`，未使用 force、未推送或
+移动 tag。推送后从 A2 再次只读确认 branch=`2b8161d`、tag object=`e13c6ed`；临时隧道已关闭。
+
+Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 个正式文件；本地
+`.learnings/`、`.codex_phase2_*`、`.phase*.json` 和远端原始日志均未进入该 commit。
+
 ## 6. 下一小步
 
-只创建 Phase 2 性能收口的追加 Git commit。精确提交以下 7 个正式文件：开发手册、主计划、
-Phase 2 验收报告、Phase 版本归档、本状态文件、`benchmark_gdn_core_ablation.py` 和
-`run_gdn_phase2_performance_matrix.py`。不得提交 `.learnings/`、`.codex_phase2_*`、`.phase*.json`
-或远端原始输出；不得 amend `f2a4b46`、不得移动 `gdn-a2-phase2` tag、不得修改 kernel/runtime，
-也不启动 Phase 3。commit 成功后记录 SHA 并将唯一下一小步改为 Phase 3 启动卡；push 单独作为
-后续动作，不与本小步混合。
+只填写并冻结 Phase 3 启动卡：阅读现有探索性 `ChunkCumsumKkt` 的 op_host/op_kernel/op_api、
+Python wrapper 和测试，明确基线、融合边界、输入输出、首版保留项、不做项、最小验收矩阵与
+成功标准，并将结论写入主计划和本状态文件。本小步只做静态证据分析和文档更新，不构建、
+不运行 NPU、不修改 kernel/runtime/接口；发现探索实现与 Phase 3 边界不符时只记录差异，
+不顺手修代码。完成后先刷新本文件，再决定首个独立 smoke 小步。
 
 ## 7. 收口判据
 
