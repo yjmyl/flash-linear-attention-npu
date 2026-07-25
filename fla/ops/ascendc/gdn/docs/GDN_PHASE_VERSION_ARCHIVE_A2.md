@@ -19,7 +19,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | --- | --- | --- | --- |
 | Phase 1 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 历史恢复点；版本化 ACLNN 已与 Phase 2 并存 |
 | Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能证据由后续 commit `2b8161d` 追加，不移动该 tag |
-| Phase 3 | `gdn-a2-phase-archive` | 待创建 `gdn-a2-phase3^{commit}` | 实现和 A2 验收已完成；待提交清单与归档前门禁通过后创建 |
+| Phase 3 | `gdn-a2-phase-archive` | `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 实现与 A2 验收里程碑；待创建同 commit 的不可变 annotated tag `gdn-a2-phase3` |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -96,5 +96,7 @@ Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径�
 - profiler 证明完整 core NPU kernel 数 `9 -> 8`，目标段由两个 kernel 合并为一个；
 - 详细证据与范围边界见 `GDN_PHASE3_ACCEPTANCE_A2.md`。
 
-Phase 3 提交后创建不可变 `gdn-a2-phase3` annotated tag 并登记精确 commit SHA。该 tag 尚未创建前，
-不得将“待创建”状态写成已归档，也不得移动 `gdn-a2-phase2`。
+Phase 3 实现与验收里程碑 commit 为 `7fb8f05b59ab56a8392e0f6c9bef071714894826`，parent 为
+`c76ab5a15b28ea5d890cbf7939ad340ce6b875be`，严格包含 31 个已审计正式文件。下一步创建指向该
+commit 的不可变 `gdn-a2-phase3` annotated tag；tag 尚未创建并远端回查前，不得写成已完成远端归档，
+也不得移动 `gdn-a2-phase2`。

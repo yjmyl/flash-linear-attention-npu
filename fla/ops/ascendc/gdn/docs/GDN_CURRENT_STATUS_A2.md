@@ -669,9 +669,27 @@ Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 �
 
 ## 6. 下一小步
 
-只创建 Phase 3 实现与验收里程碑 commit：提交当前已审计的 31 个 staged 正式文件，提交信息固定为
-`feat(gdn): complete A2 phase 3 cumulative fusion`。提交后只读核对 parent、文件清单、临时产物排除和
-commit diff；刷新本文件后停止。本小步不创建 tag、不 push、不构建或运行 NPU。
+只提交 Phase 3 精确里程碑元数据：暂存本文件和 `GDN_PHASE_VERSION_ARCHIVE_A2.md`，创建普通
+commit `docs(gdn): record phase 3 milestone`，登记实现里程碑 SHA `7fb8f05...` 及 parent/31 文件审计。
+提交后核对两文件清单并刷新本文件；本小步不创建 tag、不 push、不构建或运行 NPU。
+
+### Phase 3 实现与验收里程碑 commit（已完成）
+
+已创建普通、不可改写的实现里程碑：
+
+```text
+commit:  7fb8f05b59ab56a8392e0f6c9bef071714894826
+parent:  c76ab5a15b28ea5d890cbf7939ad340ce6b875be
+subject: feat(gdn): complete A2 phase 3 cumulative fusion
+files:   31
+```
+
+提交后审计确认 `BAD_PATH_COUNT=0`，没有 `.learnings/`、`.codex_*`、`.phase*`、build、run 包、JSON、
+日志或远端原始产物；`git diff-tree --check` 通过，parent、subject 和文件数均与冻结清单一致，
+总门禁 `MILESTONE_COMMIT_AUDIT=PASS`。没有 amend、tag、push、构建或运行 NPU。
+
+精确 SHA 通过后续普通元数据 commit 登记，避免里程碑自引用；实现里程碑本身保持不变。下一层只
+提交本状态文件和版本归档两份元数据。
 
 ### Phase 3 staged pre-commit 门禁（已完成）
 
