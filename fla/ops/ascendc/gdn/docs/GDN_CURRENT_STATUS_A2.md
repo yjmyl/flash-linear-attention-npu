@@ -14,7 +14,8 @@
 ## 2. 当前目标
 
 Phase 3 累积融合已按冻结启动卡完成正式验收、不可变 Git 里程碑和远端归档，同时保留
-Phase 1/2 固定入口可在同一包内复跑。当前只做 Phase 3 最终一致性审计，不启动 Phase 4 实现。
+Phase 1/2 固定入口可在同一包内复跑。最终一致性审计已通过，Phase 3 在冻结范围内正式关闭；
+后续如继续演进，先单独填写并冻结 Phase 4 启动卡，不在 Phase 3 上原地修改实现。
 
 ## 3. 已冻结基线
 
@@ -669,10 +670,38 @@ Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 �
 
 ## 6. 下一小步
 
-只做 Phase 3 最终一致性审计：按冻结启动卡逐项核对实现 commit/tag、正式文件清单、构建与
-安装产物身份、ABI/CPU contract、独立和 core 精度、state、生产性能、workspace/peak、profiler、
-范围边界以及远端 branch/tag；不修改 kernel，不重新解释历史失败候选，不启动 Phase 4。若全部
-证据一致，则关闭 Phase 3；若发现矛盾，只修正文档或回到对应门禁，不跨层推进。
+Phase 3 已关闭，当前没有 Phase 3 未完成小步。若开始下一阶段，唯一允许的小步是先从
+`gdn-a2-phase3^{commit}=7fb8f05b59ab56a8392e0f6c9bef071714894826` 填写 Phase 4 启动卡，冻结
+`recompute_w_u` 融合边界、输入输出、保留/不做项、验收矩阵和性能/workspace 门槛；启动卡冻结
+前不修改 kernel、Phase 1/2/3 入口或 tag。
+
+### Phase 3 最终完成性审计（通过并关闭）
+
+按冻结启动卡和完成审计规则逐项复核，结论为 `PHASE3_OFFLINE_AUDIT=PASS`：
+
+- 不可变 tag object=`b26159171f8aa0b1340f3f927412795853dc72e9`，peeled 实现 commit=
+  `7fb8f05b59ab56a8392e0f6c9bef071714894826`；里程碑严格包含 31 个正式文件；tag 后实现、接口和
+  测试无漂移，后续只修改归档文档；
+- 冻结源码包含版本化 `aclnnGdnCoreFwdPhase3` 和单 `ChunkCumsumKktSolveTri` 累积路由；本轮
+  本地 ABI `11/11 PASS`、五个正式 Python 文件 `py_compile PASS`；CPU contract 在 A2 最终包
+  已归档 `2/2 PASS`，本轮 Windows 重跑在测试启动前被已知双 OpenMP runtime 拦截，未使用
+  `KMP_DUPLICATE_LIB_OK`，因此不把该次写成新 PASS；
+- 最终独立 `80/80 exact`、独立局部性能 `8/8`、core dense/varlen/state `4+4+1`、core 性能
+  `1+3+4=8`、workspace/peak 和 profiler `9 -> 8` 证据均与最终 run/host 库身份绑定；正式报告的
+  20 个唯一 SHA256 均能在状态账本反查；
+- 本地早期 `.phase3_v_mte2_perf_pilot_summary.json` 是已淘汰候选，median 回退 `3.470%`，不属于
+  最终 MTE3 staging 性能矩阵。最终 `D_FP16_C64` 首点由 SHA256
+  `6ab6abb75e086da3af6d3b227fc4e6ad2deb461369f07d4fd0241141b293a5a6` 单独归档，其余 dense 三点
+  与 varlen 四点分别由本地哈希一致的结构化汇总复核，禁止以后用早期失败 JSON 补齐该首点；
+- 未覆盖范围仍是原生 `Hk != Hv`、`V=256`、causal conv、RMSNorm/gate、完整 Demo 性能、backward
+  和单 ACLNN 绝对 workspace `<=50 MB`；未从冻结矩阵外推全规格完成。
+
+远端完成性审计通过本机系统 HTTPS 代理执行，逐 SHA 确认归档 branch=
+`643352902102de9038ae8930743c2f20f2963183`、Phase 2 tag 未移动、Phase 3 tag object/peeled commit
+与本地完全一致，结论为 `PHASE3_REMOTE_AUDIT=PASS`。A2 当前 TCP/SSH 暂时不可达，故本轮没有
+重新读取远端 NPU 原始目录，也没有重新构建、安装或运行 NPU；最终硬件结论继续以已归档且哈希
+绑定的 A2 证据为准。以上证据满足功能/精度/性能/workspace/profiler/版本归档全部门禁，Phase 3
+正式关闭。
 
 ### Phase 3 远端 tag 归档（已完成）
 
