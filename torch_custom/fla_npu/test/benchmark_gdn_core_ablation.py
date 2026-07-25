@@ -24,6 +24,12 @@ from fla_npu.ops import ascendc
 from fla_npu.ops.ascendc import _runtime as ascendc_runtime
 
 
+STANDALONE_VARIANTS = (
+    "phase1_one_aclnn_six_kernels",
+    "phase2_one_aclnn_fused_kkt_solve",
+)
+
+
 def canonical_chunks(cu_seqlens: list[int] | None, chunk_size: int) -> list[int] | None:
     if cu_seqlens is None:
         return None
@@ -65,6 +71,12 @@ def make_inputs(args) -> dict:
         chunk_indices_tensor = torch.tensor(
             chunk_indices, device="npu", dtype=torch.int64
         ).view(-1, 2)
+    initial_state = None
+    if args.initial_state:
+        sequence_count = args.batch if cu_seqlens is None else len(cu_seqlens) - 1
+        initial_state = (
+            torch.randn(sequence_count, args.value_heads, 128, 128, dtype=torch.float32) * 0.01
+        ).npu()
     return {
         "q": q,
         "k": k,
@@ -77,6 +89,8 @@ def make_inputs(args) -> dict:
         "chunk_indices_tensor": chunk_indices_tensor,
         "chunk_size": args.chunk_size,
         "scale": 128**-0.5,
+        "initial_state": initial_state,
+        "output_final_state": args.output_final_state,
     }
 
 
@@ -132,13 +146,13 @@ def run_pipeline(inputs: dict, *, fused_kkt_solve: bool):
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
     )
-    h, v_new, _ = ascendc.chunk_gated_delta_rule_fwd_h(
+    h, v_new, final_state = ascendc.chunk_gated_delta_rule_fwd_h(
         k,
         w,
         u,
         g=g,
-        initial_state=None,
-        output_final_state=False,
+        initial_state=inputs["initial_state"],
+        output_final_state=inputs["output_final_state"],
         chunk_size=chunk_size,
         save_new_value=True,
         cu_seqlens=cu_seqlens,
@@ -158,7 +172,7 @@ def run_pipeline(inputs: dict, *, fused_kkt_solve: bool):
         chunk_size=chunk_size,
         transpose_state_layout=False,
     )
-    return output, g.transpose(1, 2).contiguous(), a
+    return output, g.transpose(1, 2).contiguous(), a, final_state
 
 
 def make_kkt_solve_inputs(inputs: dict) -> dict:
@@ -232,14 +246,15 @@ def run_composite_with(function, inputs: dict):
         inputs["v"],
         inputs["g"],
         inputs["beta"],
-        output_final_state=False,
+        initial_state=inputs["initial_state"],
+        output_final_state=inputs["output_final_state"],
         chunk_size=inputs["chunk_size"],
         cu_seqlens=inputs["cu_seqlens"],
         chunk_indices=inputs["chunk_indices"],
         scale=inputs["scale"],
     )
-    output, _, g_cumsum, a = return_values
-    return output, g_cumsum, a
+    output, final_state, g_cumsum, a = return_values
+    return output, g_cumsum, a, final_state
 
 
 def run_composite(inputs: dict):
@@ -254,6 +269,23 @@ def run_composite_phase2(inputs: dict):
     return run_composite_with(ascendc.gdn_core_fwd_phase2, inputs)
 
 
+def tensor_finiteness(tensor: torch.Tensor | None) -> dict:
+    if tensor is None:
+        return {
+            "present": False,
+            "element_count": 0,
+            "non_finite_count": 0,
+            "all_finite": True,
+        }
+    non_finite_count = int((~torch.isfinite(tensor.float())).sum().cpu())
+    return {
+        "present": True,
+        "element_count": tensor.numel(),
+        "non_finite_count": non_finite_count,
+        "all_finite": non_finite_count == 0,
+    }
+
+
 def valid_a_chunks(tensor: torch.Tensor, inputs: dict):
     cu_seqlens = inputs["cu_seqlens"]
     sequences = [(batch, 0, tensor.shape[2]) for batch in range(tensor.shape[0])]
@@ -266,6 +298,29 @@ def valid_a_chunks(tensor: torch.Tensor, inputs: dict):
             yield tensor[batch, :, chunk_begin:chunk_end, :chunk_len]
 
 
+def standalone_finiteness(outputs, inputs: dict) -> dict:
+    valid_a_element_count = 0
+    valid_a_non_finite_count = 0
+    for chunk in valid_a_chunks(outputs[2], inputs):
+        valid_a_element_count += chunk.numel()
+        valid_a_non_finite_count += int((~torch.isfinite(chunk.float())).sum().cpu())
+    components = {
+        "output": tensor_finiteness(outputs[0]),
+        "g_cumsum": tensor_finiteness(outputs[1]),
+        "valid_a": {
+            "present": True,
+            "element_count": valid_a_element_count,
+            "non_finite_count": valid_a_non_finite_count,
+            "all_finite": valid_a_non_finite_count == 0,
+        },
+        "final_state": tensor_finiteness(outputs[3]),
+    }
+    return {
+        "all_finite": all(component["all_finite"] for component in components.values()),
+        "components": components,
+    }
+
+
 def compare_results(expected, actual, inputs: dict) -> dict:
     output_equal = torch.equal(expected[0].cpu(), actual[0].cpu())
     g_equal = torch.equal(expected[1].cpu(), actual[1].cpu())
@@ -274,11 +329,20 @@ def compare_results(expected, actual, inputs: dict) -> dict:
         for left, right in zip(valid_a_chunks(expected[2], inputs), valid_a_chunks(actual[2], inputs))
     )
     max_abs = float((expected[0].float() - actual[0].float()).abs().max().cpu())
+    expected_state = expected[3]
+    actual_state = actual[3]
+    state_equal = (
+        expected_state is None and actual_state is None
+        or expected_state is not None
+        and actual_state is not None
+        and torch.equal(expected_state.cpu(), actual_state.cpu())
+    )
     return {
-        "bit_exact": output_equal and g_equal and a_equal,
+        "bit_exact": output_equal and g_equal and a_equal and state_equal,
         "output_bit_exact": output_equal,
         "g_bit_exact": g_equal,
         "valid_a_bit_exact": a_equal,
+        "final_state_bit_exact": state_equal,
         "output_max_abs": max_abs,
     }
 
@@ -405,27 +469,93 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def measure_latency(function, inputs: dict, warmup: int, iterations: int) -> dict:
-    clear_allocator_state()
-    for _ in range(warmup):
-        function(inputs)
-    torch.npu.synchronize()
-    samples = []
-    for _ in range(iterations):
-        start = torch.npu.Event(enable_timing=True)
-        end = torch.npu.Event(enable_timing=True)
-        start.record()
-        function(inputs)
-        end.record()
-        end.synchronize()
-        samples.append(float(start.elapsed_time(end)))
-    result = {
-        "iterations": iterations,
+def latency_summary(samples: list[float]) -> dict:
+    return {
+        "iterations": len(samples),
         "mean_ms": statistics.fmean(samples),
         "median_ms": statistics.median(samples),
         "p90_ms": percentile(samples, 0.90),
         "min_ms": min(samples),
         "samples_ms": samples,
+    }
+
+
+def run_synchronized(function, inputs: dict) -> None:
+    outputs = function(inputs)
+    torch.npu.synchronize()
+    del outputs
+    ascendc_runtime._RECENT_LAUNCH_STORAGE.clear()
+
+
+def measure_latency(function, inputs: dict, warmup: int, iterations: int) -> dict:
+    clear_allocator_state()
+    for _ in range(warmup):
+        run_synchronized(function, inputs)
+    samples = []
+    for _ in range(iterations):
+        start = torch.npu.Event(enable_timing=True)
+        end = torch.npu.Event(enable_timing=True)
+        start.record()
+        outputs = function(inputs)
+        end.record()
+        end.synchronize()
+        samples.append(float(start.elapsed_time(end)))
+        del outputs
+        ascendc_runtime._RECENT_LAUNCH_STORAGE.clear()
+    result = latency_summary(samples)
+    clear_allocator_state()
+    return result
+
+
+def measure_paired_latency(
+    first_name: str,
+    first_function,
+    second_name: str,
+    second_function,
+    inputs: dict,
+    warmup: int,
+    iterations: int,
+) -> dict:
+    functions = {
+        first_name: first_function,
+        second_name: second_function,
+    }
+    samples = {first_name: [], second_name: []}
+    clear_allocator_state()
+    for iteration in range(warmup):
+        order = (first_name, second_name) if iteration % 2 == 0 else (second_name, first_name)
+        for name in order:
+            run_synchronized(functions[name], inputs)
+
+    for iteration in range(iterations):
+        order = (first_name, second_name) if iteration % 2 == 0 else (second_name, first_name)
+        for name in order:
+            start = torch.npu.Event(enable_timing=True)
+            end = torch.npu.Event(enable_timing=True)
+            start.record()
+            outputs = functions[name](inputs)
+            end.record()
+            end.synchronize()
+            samples[name].append(float(start.elapsed_time(end)))
+            del outputs
+            ascendc_runtime._RECENT_LAUNCH_STORAGE.clear()
+
+    first_summary = latency_summary(samples[first_name])
+    second_summary = latency_summary(samples[second_name])
+    result = {
+        "method": "paired_alternating_npu_events",
+        "order": (
+            f"even rounds: {first_name} -> {second_name}; "
+            f"odd rounds: {second_name} -> {first_name}"
+        ),
+        "warmup_rounds": warmup,
+        "results": {
+            first_name: first_summary,
+            second_name: second_summary,
+        },
+        "second_vs_first_median_change_pct": (
+            (second_summary["median_ms"] / first_summary["median_ms"] - 1.0) * 100.0
+        ),
     }
     clear_allocator_state()
     return result
@@ -476,6 +606,68 @@ def profile_variant(name: str, function, inputs: dict, output_dir: Path) -> dict
     return trace_summary(trace_path)
 
 
+def contract_report(args, inputs: dict) -> dict:
+    return {
+        "device": args.device,
+        "batch": args.batch,
+        "logical_key_heads": args.key_heads,
+        "value_heads": args.value_heads,
+        "physical_qk_heads": args.value_heads,
+        "tokens": args.tokens,
+        "k_dim": 128,
+        "v_dim": 128,
+        "chunk_size": args.chunk_size,
+        "dtype": args.dtype,
+        "cu_seqlens": inputs["cu_seqlens"],
+        "initial_state": args.initial_state,
+        "output_final_state": args.output_final_state,
+        "seed": args.seed,
+    }
+
+
+def run_standalone(args, inputs: dict) -> None:
+    functions = {
+        "phase1_one_aclnn_six_kernels": run_composite_phase1,
+        "phase2_one_aclnn_fused_kkt_solve": run_composite_phase2,
+    }
+    function = functions[args.standalone_variant]
+    outputs = function(inputs)
+    torch.npu.synchronize()
+    finiteness = standalone_finiteness(outputs, inputs)
+    del outputs
+    clear_allocator_state()
+
+    result = measure_once(function, inputs)
+    if result["aclnn_call_count"] != 1:
+        raise AssertionError(
+            f"{args.standalone_variant}: expected 1 ACLNN call, "
+            f"observed {result['aclnn_call_count']}"
+        )
+    result["latency"] = measure_latency(function, inputs, args.warmup, args.iterations)
+    if args.profile:
+        result["profile"] = profile_variant(
+            args.standalone_variant, function, inputs, args.output.parent / "traces"
+        )
+
+    report = {
+        "case_id": args.case_id,
+        "measurement": {
+            "method": "standalone_clean_process_npu_events",
+            "ascend_launch_blocking": os.environ.get("ASCEND_LAUNCH_BLOCKING"),
+            "warmup_rounds": args.warmup,
+            "iterations_per_variant": args.iterations,
+            "standalone_variant": args.standalone_variant,
+        },
+        "contract": contract_report(args, inputs),
+        "finiteness": finiteness,
+        "expected_aclnn_call_count": {args.standalone_variant: 1},
+        "variants": {args.standalone_variant: result},
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=int(os.environ.get("TEST_DEVICE_ID", 0)))
@@ -489,13 +681,33 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--seed", type=int, default=20260724)
+    parser.add_argument("--initial-state", action="store_true")
+    parser.add_argument("--output-final-state", action="store_true")
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument(
+        "--paired-only",
+        action="store_true",
+        help="Skip fixed-order latency and use only paired Phase 1/2 and stage measurements.",
+    )
+    parser.add_argument(
+        "--standalone-variant",
+        choices=STANDALONE_VARIANTS,
+        default="",
+        help="Run exactly one versioned composite variant in this process.",
+    )
+    parser.add_argument("--case-id", default="")
     parser.add_argument("--output", type=Path, default=Path("gdn_core_ablation.json"))
     args = parser.parse_args()
+
+    if args.paired_only and args.standalone_variant:
+        parser.error("--paired-only and --standalone-variant are mutually exclusive")
 
     torch.npu.set_device(args.device)
     torch.npu.set_compile_mode(jit_compile=False)
     inputs = make_inputs(args)
+    if args.standalone_variant:
+        run_standalone(args, inputs)
+        return
     kkt_solve_inputs = make_kkt_solve_inputs(inputs)
     legacy = run_legacy(inputs)
     composite = run_composite(inputs)
@@ -543,7 +755,8 @@ def main() -> None:
     results = {}
     for name, function in variants.items():
         result = measure_once(function, inputs)
-        result["latency"] = measure_latency(function, inputs, args.warmup, args.iterations)
+        if not args.paired_only:
+            result["latency"] = measure_latency(function, inputs, args.warmup, args.iterations)
         if args.profile:
             result["profile"] = profile_variant(name, function, inputs, args.output.parent / "traces")
         results[name] = result
@@ -555,7 +768,8 @@ def main() -> None:
     stage_results = {}
     for name, function in stage_variants.items():
         result = measure_once(function, kkt_solve_inputs)
-        result["latency"] = measure_latency(function, kkt_solve_inputs, args.warmup, args.iterations)
+        if not args.paired_only:
+            result["latency"] = measure_latency(function, kkt_solve_inputs, args.warmup, args.iterations)
         if args.profile:
             result["profile"] = profile_variant(
                 f"stage_{name}", function, kkt_solve_inputs, args.output.parent / "traces"
@@ -583,27 +797,43 @@ def main() -> None:
         if actual != expected:
             raise AssertionError(f"{name}: expected {expected} ACLNN calls, observed {actual}")
 
+    paired_latency = {
+        "core_phase1_vs_phase2": measure_paired_latency(
+            "phase1_one_aclnn_six_kernels",
+            run_composite_phase1,
+            "phase2_one_aclnn_fused_kkt_solve",
+            run_composite_phase2,
+            inputs,
+            args.warmup,
+            args.iterations,
+        ),
+        "stage_legacy_vs_fused": measure_paired_latency(
+            "legacy_kkt_then_solve_tri",
+            run_legacy_kkt_solve,
+            "fused_kkt_solve_tri",
+            run_fused_kkt_solve_stage,
+            kkt_solve_inputs,
+            args.warmup,
+            args.iterations,
+        ),
+    }
+
     report = {
-        "contract": {
-            "device": args.device,
-            "batch": args.batch,
-            "logical_key_heads": args.key_heads,
-            "value_heads": args.value_heads,
-            "physical_qk_heads": args.value_heads,
-            "tokens": args.tokens,
-            "k_dim": 128,
-            "v_dim": 128,
-            "chunk_size": args.chunk_size,
-            "dtype": args.dtype,
-            "cu_seqlens": inputs["cu_seqlens"],
-            "seed": args.seed,
+        "case_id": args.case_id,
+        "measurement": {
+            "ascend_launch_blocking": os.environ.get("ASCEND_LAUNCH_BLOCKING"),
+            "warmup_rounds": args.warmup,
+            "iterations_per_variant": args.iterations,
+            "paired_only": args.paired_only,
         },
+        "contract": contract_report(args, inputs),
         "accuracy": accuracy,
         "stage_accuracy": stage_accuracy,
         "expected_aclnn_call_count": expected_calls,
         "expected_stage_aclnn_call_count": expected_stage_calls,
         "variants": results,
         "stage_variants": stage_results,
+        "paired_latency": paired_latency,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")

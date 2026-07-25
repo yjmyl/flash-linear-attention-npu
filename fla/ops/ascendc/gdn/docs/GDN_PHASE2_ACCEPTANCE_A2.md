@@ -2,7 +2,9 @@
 
 ## 1. 结论
 
-Phase 2 `chunk_scaled_dot_kkt + solve_tri` 于 2026-07-25 在 A2（Ascend 910B）完成实现、功能/精度验收和代表性性能筛查。已测 4 个正式性能 case 均无回退，但尚不能声明完成“全场景性能验收”：规格笛卡积、长序列/多头扩展性以及生产性能模式仍待补测。
+Phase 2 `chunk_scaled_dot_kkt + solve_tri` 于 2026-07-25 在 A2（Ascend 910B）按冻结范围完成工程收口：实现、功能/精度、版本化入口、kernel 数、生产性能和 workspace/peak 证据均已归档。生产性能关闭 `ASCEND_LAUNCH_BLOCKING`；dense 四个 dtype/chunk 交叉点、varlen 四个交叉点和 `B=4,H=4,T=4096` 扩展点的主判据 median 均无可复现回退，varlen standalone 的 Phase 2 输出/state 均通过独立有限性检查。
+
+收口不等于最终 GDN 全规格已经验收。`T=32768` 上 Phase 2 单路径可运行且输出有限，但 Phase 1 旧路径在第一次同步时 MTE 越界，因此该点只能记录 Phase 2 绝对性能，不能给出相对基线结论；原生 GVA、`V=256`、完整 Demo 性能和单 ACLNN 绝对 workspace `<=50 MB` 仍属于后续范围或需求口径待确认项。上述旧基线和范围外事项不再阻塞 Phase 3 启动。
 
 已验证的融合边界为：
 
@@ -23,6 +25,8 @@ k + g_cumsum + beta
 - 包大小：`4,505,980` bytes
 - 融合 kernel 源码与构建拷贝 SHA256 一致：`629a52ff9e9eb2655d4bb56c0367d8b6858c682994c8b330657dc1b4ae32bc06`
 - 同一安装包已确认包含 `GdnCoreFwd`、`ChunkScaledDotKkt`、`SolveTri` 和 `ChunkKktSolveTri` 的 ACLNN 符号。
+
+生产性能收口实际加载的 `libcust_opapi.so` SHA256 为 `87c387757fcc19227a166aa90be149b4ce02bc386f8982ac731fbb8741a3349e`，与 Phase 版本恢复验证记录一致，并同时导出 Phase 1/2 执行和 `GetWorkspaceSize` 符号。远端当前 `build_out` run 包 SHA256 为 `ad3d614ca03844246a97c234cd04fa804855ac637d5a385fa8471bddb70f0cd1`，不是上面的旧归档包，不能混作同一产物；生产报告以实际加载库哈希为准。
 
 使用完整包是验收前提。仅安装单个融合算子的局部 OPP 包会覆盖共享 `libcust_opapi.so`，并丢失基线符号。
 
@@ -185,19 +189,48 @@ Profiler 只在 P1 上执行：
 
 同一 contract 的 `phase2_accept_*.json` 和 `phase2_final_*.json` 是修复过程和最终完整包的重复运行，不是新的 shape case；本报告的正式表格使用 `phase2_final_*.json`。
 
-### 4.8 待补的性能矩阵
+### 4.8 生产性能门禁收口
 
-| 维度 | 当前状态 | 待补内容 |
-| --- | --- | --- |
-| dtype × chunk × layout | 4 个对角组合 | 至少补 dense FP16 C64、dense BF16 C128、varlen FP16 C64、varlen BF16 C128 |
-| batch/head 扩展 | 性能 case 主要是物理 H=8，dense B=1/2 | 补 H=1/4/16/32 代表点及更大 dense B |
-| 序列长度 | `T=257/259/1024` | 补 `T=4096/32768` 等实际长序列和更多 chunk 数 |
-| GVA | 外部扩头，且扩头不在计时区间 | 原生 `Hk != Hv` 实现后重新验收，并计入布局/扩头成本 |
-| V 维度 | 仅 `V=128` | `V=256` 在后续规格扩展完成后验收 |
-| state/完整 Demo | 未做性能矩阵 | 补 initial/final state，以及 causal conv + RMSNorm/gate 的完整 Demo |
-| 测量方法 | launch blocking，固定 variant 顺序 | 关闭 launch blocking，使用成对交替/随机顺序、更多迭代和独立 profiler |
+生产测试关闭 `ASCEND_LAUNCH_BLOCKING`，warmup `10`、每个 variant `50` 次 NPU Event 计时。dense case 可在同进程成对交替；varlen 因已证明的 Phase 1 workspace 初值依赖，按主计划 5.2 的受控例外使用 `4` 轮 AB/BA、共 `8` 个干净子进程，每个 Phase 聚合 `200` 个样本。
 
-因此当前可以归档的严格结论是：**Phase 2 局部融合在 4 个代表 case 上有明确收益，回放到 core 后未观察到回退；需求中的“全场景性能不劣化”尚未被完整证明。**
+dense dtype/chunk 交叉点：
+
+| case | Phase 1 median | Phase 2 median | core median 变化 | KKT+solve median 变化 |
+| --- | ---: | ---: | ---: | ---: |
+| BF16 C64, `T=1024` | 1.043 ms | 1.016 ms | `-2.582%` | `-41.020%` |
+| FP16 C64, `T=1025` | 1.061 ms | 1.022 ms | `-3.644%` | `-42.278%` |
+| BF16 C128, `T=1024` | 1.085 ms | 1.072 ms | `-1.194%` | `-42.730%` |
+| FP16 C128, `T=1025` | 1.059 ms | 1.027 ms | `-2.992%` | `-42.872%` |
+
+varlen dtype/chunk 交叉点：
+
+| case | Phase 1 median | Phase 2 median | median 变化 | P90 变化 |
+| --- | ---: | ---: | ---: | ---: |
+| BF16 C64 | 1.116 ms | 0.959 ms | `-14.121%` | `-15.265%` |
+| FP16 C64 | 1.056 ms | 0.966 ms | `-8.489%` | `-8.986%` |
+| BF16 C128 | 1.190 ms | 0.964 ms | `-19.039%` | `-22.922%` |
+| FP16 C128, device 2 | 1.144 ms | 0.987 ms | `-13.699%` | `+2.655%` |
+| FP16 C128, device 1 独立复制 | 1.003 ms | 0.944 ms | `-5.887%` | `-5.764%` |
+
+FP16 C128 在 device 2 的 P90 小幅回退未在 device 1 独立复制中复现，两次实验的主判据 median 均改善，因此按“median 无回退、P90 异常未复现”收口。
+
+`B=4,H=4,T=4096,BF16,C64` 在 device 1 两组独立实验合并后，每个 Phase 共 `400` 个样本：Phase 1/2 median 为 `2.115/2.091 ms`，Phase 2 改善 `1.147%`；P90 为 `2.195/2.286 ms`，回退 `4.133%`，但两组实验方向相反，判为长尾不稳定而非可复现主路径回退。Phase 2 workspace 增加 `8,855,552 B`，peak 增加 `8,388,608 B`，均低于相对基线额外 `50 MB` 门槛。
+
+`T=32768` varlen FP16/C128 长序列点中，Phase 1 首次同步即发生 `507015`/AIV MTE 越界，runner 按协议停止；全新进程中的 Phase 2 单路径随后通过，output、`g_cumsum` 和有效 `A` 非有限计数均为 `0`，mean/median/P90/min 为 `6.954/6.911/7.268/6.682 ms`。其绝对 workspace 为 `543,318,528 B`（`518.15 MiB`），peak allocated delta 为 `679,634,432 B`（`648.15 MiB`）。由于 Phase 1 不可运行，该点不能计算相对性能和相对显存，也不把旧路径修复扩入 Phase 2。
+
+### 4.9 收口结论与剩余边界
+
+| 维度 | 收口结论 |
+| --- | --- |
+| 功能/精度 | 已验收范围通过；旧基线非有限用例改用 CPU FP64 参考，Phase 2 独立检查有限性 |
+| dtype/chunk/layout | dense 和 varlen 的 FP16/BF16 × C64/C128 交叉点均已覆盖 |
+| batch/head | `B=4,H=4,T=4096` 代表点主判据无回退；更大 H 笛卡积不作为 Phase 2 继续扩测项 |
+| 长序列 | Phase 2 `T=32768` 可运行且有限；Phase 1 失败导致相对性能/显存不可判定 |
+| 性能 | 所有可比较 case 的 Phase 2 median 均无可复现回退；局部融合收益稳定 |
+| kernel 数 | 局部 `3 -> 1`，Python core `12 -> 10`，证据已归档 |
+| 显存 | 可比较生产 case 的最大相对增量为 `8.86 MB` workspace / `8.39 MB` peak；绝对单 ACLNN workspace 不满足 `50 MB` 口径 |
+
+因此 Phase 2 按冻结的 `K==V==128`、外部扩头 GVA、现有 transpose/layout 边界完成工程收口，可以进入 Phase 3 启动卡。不能由此宣称原生 GVA、`V=256`、完整 Demo 或绝对 workspace `<=50 MB` 已完成。
 
 ## 5. 范围边界
 
@@ -208,4 +241,4 @@ Profiler 只在 P1 上执行：
 
 ## 6. 下一步
 
-先补齐 4.8 中的 Phase 2 性能门禁，至少完成 dtype/chunk/layout 交叉组合、头数/长序列代表点和关闭 launch blocking 的交替测量。在此期间可以做 Phase 3 的方案分析，但在 Phase 2 全性能门禁收口前，不开始不可逆的 Phase 3 kernel 替换。
+Phase 2 已按冻结范围收口。下一步按开发手册先填写 Phase 3 启动卡，独立验证现有探索性 `ChunkCumsumKkt`，首版只做 `local_cumsum + KKT` 局部 A/B；在启动卡、最小 smoke 和独立精度矩阵通过前，不接入 `solve_tri`，不修改 transpose、原生 GVA、`V=256` 或 workspace 复用策略。

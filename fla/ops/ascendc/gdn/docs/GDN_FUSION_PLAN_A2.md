@@ -207,6 +207,20 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 
 后续 Phase 3 必须新增 `aclnnGdnCoreFwdPhase3`，不能修改 Phase 1/2 的阶段调度来承载 Phase 3。版本化入口必须同时存在于同一个完整验收包中，使用同一输入、同一设备和同一 benchmark 直接 A/B；不得用不同安装包的先后测试冒充同环境对照。
 
+### 5.2 Phase 2 性能对照的进程隔离例外
+
+`V_BF16_C64` 的因果 A/B 已证明：Phase 1/2 各自在干净进程中连续 `10/10 PASS`，但 Phase 2
+释放 workspace 后，Phase 1 若在同一进程复用同址的非零 workspace 会触发 `507015`/AIV MTE
+越界；迫使 Phase 1 换址或清零 Phase 1/2 workspace 重叠区后故障消失。这是 Phase 1 对 workspace
+初值的未声明依赖，继续用同进程交替会把旧路径生命周期缺陷混入 Phase 2 性能门禁。
+
+因此 Phase 2 剩余性能收口采用以下受控例外：Phase 1/2 仍使用同一个完整安装包、同一输入、
+同一 device、同一环境和同一 benchmark 参数，但每个 variant 在干净进程中分别测量；case 级
+执行顺序按 `Phase 1 -> Phase 2` 与 `Phase 2 -> Phase 1` 进程级换序，固定 warmup/iteration，
+分别记录 median、P90 和 min，用重复批次检查设备漂移。该例外只改变进程生命周期，不允许
+更换构建产物、输入 contract 或计时方法。旧基线非有限的用例只使用 Phase 1 latency，Phase 2
+精度必须独立检查有限性并与 CPU FP64 或其他已验证高精度参考比较。
+
 版本化入口只允许修复已证明影响该版本正确性、构建性或 ABI 的缺陷。修复前后必须归档原因和回归结果；性能优化或新融合边界一律进入新 Phase。源代码提交或归档点、安装包 SHA256、验收报告共同构成 Phase 快照，只有函数改名而没有测试和版本证据不算归档完成。
 
 每个融合阶段都必须在同一个 benchmark 中增加命名 variant，并与 Phase 0 六算子基线比较。不能为每个版本创建互不兼容的测试脚本。
@@ -253,14 +267,16 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - Phase 1 因此关闭，后续默认从 Phase 2 开始
 - Phase 1 的六独立 kernel 复合调度已恢复并固化为 `aclnnGdnCoreFwdPhase1`；不再由通用入口的当前实现隐式代表
 
-截至 2026-07-25，Phase 2 已完成实现、功能/精度验收和代表性性能筛查，但完整性能门禁尚未关闭：
+截至 2026-07-25，Phase 2 已按冻结范围完成实现、功能/精度和生产性能门禁，可以进入 Phase 3 启动卡：
 
 - 独立 `ChunkKktSolveTri` A/B：`6/6 PASS`，覆盖 dense/varlen、FP16/BF16、`chunk_size=64/128`、多 batch/头数和尾块
 - 4 组端到端 GDN core 消融场景通过；输出、`g_cumsum` 和有效 `A` 区域与基线一致
 - 4 个代表 case 中，Phase 2 局部阶段 median latency 下降 `45.2%–57.3%`，完整 core 五调用路径相对六调用 median 改善 `1.2%–27.2%`
 - profiler 确认 KKT + solve_tri 的 NPU kernel 数由 3 降为 1，完整 core 路径由 12 降为 10
 - 局部融合 ACLNN 最大 workspace 为 `24,252,928` bytes；完整 core 峰值分配较基线下降 `8.2%–9.0%`
-- 当前只有 4 个对角性能组合，且使用了 `ASCEND_LAUNCH_BLOCKING=1`；完整规格矩阵与生产性能模式待补
+- 关闭 `ASCEND_LAUNCH_BLOCKING` 后，dense/varlen 的 FP16/BF16 × C64/C128 交叉点和 `B=4,H=4,T=4096` 扩展点的 Phase 2 median 均无可复现回退；varlen standalone 的 Phase 2 输出/state 均通过独立有限性检查
+- `T=32768` varlen 上 Phase 2 单路径输出有限且 median 为 `6.911 ms`；Phase 1 首次同步 MTE 越界，故该点的相对性能/显存不可判定，不扩入 Phase 1 修复
+- 生产可比较 case 的最大相对增量为 `8.86 MB` workspace / `8.39 MB` peak；单 ACLNN 绝对 workspace `<=50 MB` 口径未满足，需与相对增量口径区分
 - 完整结果见 `GDN_PHASE2_ACCEPTANCE_A2.md`
 
 当前工作区已经有：
@@ -272,7 +288,7 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - 已验收的 Phase 2 `ChunkKktSolveTri` 实现和独立 A/B 测试
 - 可并存构建和调用的 `aclnnGdnCoreFwdPhase1` / `aclnnGdnCoreFwdPhase2` 固定入口
 
-这些改动仍可能处于未提交状态。它们是当前工作区状态，不代表本文档中的后续阶段都已经完成。下一步先补齐 **Phase 2 完整性能门禁**；可并行分析 Phase 3，但性能门禁收口前不替换已验证路径。
+这些改动仍可能处于未提交状态。它们是当前工作区状态，不代表本文档中的后续阶段都已经完成。下一步先归档 **Phase 2 性能收口增量**；之后填写 Phase 3 启动卡，先独立验证 `ChunkCumsumKkt`，不直接替换已验证的 Phase 2 路径。
 
 ## 8. 相关文件
 

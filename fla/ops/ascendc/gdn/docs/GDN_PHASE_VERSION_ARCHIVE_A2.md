@@ -18,7 +18,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase | 分支 | Git 里程碑 | 说明 |
 | --- | --- | --- | --- |
 | Phase 1 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 历史恢复点；版本化 ACLNN 已与 Phase 2 并存 |
-| Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 首个 Git 里程碑；完整性能门禁仍按验收报告中的剩余项继续收口 |
+| Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能门禁已收口，待追加性能证据 commit，不移动该 tag |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -27,7 +27,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase | ACLNN / Python | 内部路径 | 状态 |
 | --- | --- | --- | --- |
 | Phase 1 | `aclnnGdnCoreFwdPhase1` / `gdn_core_fwd_phase1` | `local_cumsum -> KKT -> cast -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o` | 已恢复并通过 A2 smoke |
-| Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化并通过 A2 smoke |
+| Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化，并按冻结范围完成 A2 功能/精度/生产性能收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1 和 Phase 2 在一个包内并存，后续 Phase 3 必须新增独立入口。
@@ -69,3 +69,13 @@ phase2_one_aclnn_fused_kkt_solve
 - 本地和 A2 ctypes ABI 单测均 `10/10 PASS`；安装包 API 检查通过。
 
 这两例是恢复完整性 smoke，不替代 Phase 1 原 `6/6` 验收和 Phase 2 正式性能报告。上述源码哈希和动态库哈希与 Git 里程碑共同构成本次恢复点的可追溯证据。
+
+## 2026-07-25 Phase 2 性能收口
+
+- 生产性能关闭 `ASCEND_LAUNCH_BLOCKING`；dense/varlen 的 FP16/BF16 × C64/C128 交叉点和 `B=4,H=4,T=4096` 扩展点的主判据 median 均无可复现回退。
+- varlen 使用干净进程 AB/BA 平衡测量，规避已证明的 Phase 1 workspace 初值依赖；Phase 2 的 varlen standalone 生产运行均通过独立有限性检查。
+- `T=32768` varlen 上 Phase 2 单路径通过，median `6.911 ms`；Phase 1 首次同步 MTE 越界，因此不产生相对基线结论。
+- 实际加载的 `libcust_opapi.so` SHA256 为 `87c387757fcc19227a166aa90be149b4ce02bc386f8982ac731fbb8741a3349e`，与恢复验证一致。
+- 详细矩阵、workspace/peak、异常复测和剩余范围见 `GDN_PHASE2_ACCEPTANCE_A2.md`。
+
+性能收口只追加测试、报告和归档元数据，不改变 `gdn-a2-phase2` 指向的 `f2a4b46` 代码快照。应在当前归档分支新增普通 commit 保存正式 benchmark/runner、报告和文档，禁止 amend 旧里程碑或移动 tag。
