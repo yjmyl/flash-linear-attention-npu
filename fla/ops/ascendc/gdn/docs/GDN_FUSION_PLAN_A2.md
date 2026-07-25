@@ -360,9 +360,11 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - `aclnnGdnCoreFwdPhase1/2/3` 与默认入口可在同一包内并存，默认入口仍保持 Phase 2 兼容行为；
 - 完整结果见 `GDN_PHASE3_ACCEPTANCE_A2.md`。
 
-Phase 3 当前仍处于未提交工作区，尚未创建 `gdn-a2-phase3` 不可变 tag。只有正式提交清单、归档前
-门禁、里程碑 commit、tag 和远端只读回查全部完成后，才能将 Phase 3 标记为 Git 已归档；Phase 4
-不得在此之前启动。
+Phase 3 的正式文件清单、归档前门禁、实现与验收里程碑 commit、不可变 annotated tag、归档
+branch 和远端逐 SHA 回查均已完成。`gdn-a2-phase3^{commit}` 固定为
+`7fb8f05b59ab56a8392e0f6c9bef071714894826`，tag object 固定为
+`b26159171f8aa0b1340f3f927412795853dc72e9`；Phase 3 已标记为 Git 归档完成。Phase 4 只能从该
+不可变里程碑追加新 commit 和新版本化入口，不得原地改写 Phase 3。
 
 ## 8. 相关文件
 

@@ -19,7 +19,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | --- | --- | --- | --- |
 | Phase 1 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 历史恢复点；版本化 ACLNN 已与 Phase 2 并存 |
 | Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能证据由后续 commit `2b8161d` 追加，不移动该 tag |
-| Phase 3 | `gdn-a2-phase-archive` | `gdn-a2-phase3^{commit}` = `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 本地不可变 annotated tag 已创建；待远端推送与回查 |
+| Phase 3 | `gdn-a2-phase-archive` | `gdn-a2-phase3^{commit}` = `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 不可变 annotated tag 已远端推送并逐 SHA 回查 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -29,7 +29,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | --- | --- | --- | --- |
 | Phase 1 | `aclnnGdnCoreFwdPhase1` / `gdn_core_fwd_phase1` | `local_cumsum -> KKT -> cast -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o` | 已恢复并通过 A2 smoke |
 | Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化，并按冻结范围完成 A2 功能/精度/生产性能收口 |
-| Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 收口，待 Git 里程碑 |
+| Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
@@ -99,5 +99,7 @@ Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径�
 Phase 3 实现与验收里程碑 commit 为 `7fb8f05b59ab56a8392e0f6c9bef071714894826`，parent 为
 `c76ab5a15b28ea5d890cbf7939ad340ce6b875be`，严格包含 31 个已审计正式文件。本地 annotated tag
 `gdn-a2-phase3` object 为 `b26159171f8aa0b1340f3f927412795853dc72e9`，peeled commit 正是
-`7fb8f05...`，message 为 `A2 GDN Phase 3 cumulative fusion`。远端 branch/tag 推送并回查前，
-不得写成已完成远端归档，也不得移动 `gdn-a2-phase2`。
+`7fb8f05...`，message 为 `A2 GDN Phase 3 cumulative fusion`。远端 branch 已 fast-forward 到
+`1595456dabbae42e70912c4b8981bbbdaace3279`，随后 Phase 3 tag 单独推送；最终 `git ls-remote`
+逐 SHA 回查确认 branch、Phase 2 tag 和 Phase 3 tag 均与冻结记录一致。推送过程未使用 force，
+也未移动 `gdn-a2-phase2`。

@@ -13,8 +13,8 @@
 
 ## 2. 当前目标
 
-按已冻结启动卡完成 Phase 3 累积融合的正式验收、不可变 Git 里程碑和远端归档，同时保留
-Phase 1/2 固定入口可在同一包内复跑。
+Phase 3 累积融合已按冻结启动卡完成正式验收、不可变 Git 里程碑和远端归档，同时保留
+Phase 1/2 固定入口可在同一包内复跑。当前只做 Phase 3 最终一致性审计，不启动 Phase 4 实现。
 
 ## 3. 已冻结基线
 
@@ -669,12 +669,24 @@ Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 �
 
 ## 6. 下一小步
 
-只做 Phase 3 tag 远端归档：先只读确认 `chw/gdn-a2-phase-archive` 仍为
-`1595456dabbae42e70912c4b8981bbbdaace3279`、远端 `gdn-a2-phase3` 仍不存在、Phase 2 tag
-object/peeled commit 未移动；随后只显式推送本地 annotated tag `gdn-a2-phase3`，不推 branch 或
-其他 tag。推送后只读回查 tag object=`b26159171f8aa0b1340f3f927412795853dc72e9`、peeled
-commit=`7fb8f05b59ab56a8392e0f6c9bef071714894826` 和 branch 未移动，再刷新本文件；本小步不构建或
-运行 NPU。
+只做 Phase 3 最终一致性审计：按冻结启动卡逐项核对实现 commit/tag、正式文件清单、构建与
+安装产物身份、ABI/CPU contract、独立和 core 精度、state、生产性能、workspace/peak、profiler、
+范围边界以及远端 branch/tag；不修改 kernel，不重新解释历史失败候选，不启动 Phase 4。若全部
+证据一致，则关闭 Phase 3；若发现矛盾，只修正文档或回到对应门禁，不跨层推进。
+
+### Phase 3 远端 tag 归档（已完成）
+
+写入前只读竞态检查确认：远端 branch 精确为
+`1595456dabbae42e70912c4b8981bbbdaace3279`，`gdn-a2-phase3` 不存在，Phase 2 annotated tag object
+仍为 `e13c6ed2f2b8e021f59696964af1eebb21676a92`、peeled commit 仍为
+`f2a4b467f37887824106633524bd0b1c45737e1c`；本地 Phase 3 tag object/peeled commit 分别为
+`b26159171f8aa0b1340f3f927412795853dc72e9` 和
+`7fb8f05b59ab56a8392e0f6c9bef071714894826`。
+
+随后只显式推送 `refs/tags/gdn-a2-phase3:refs/tags/gdn-a2-phase3`，没有推 branch、其他 tag 或使用
+force。推送后 `git ls-remote` 逐 SHA 回查通过：Phase 3 tag object/peeled commit 与本地完全一致，
+branch 仍为 `1595456...`，Phase 2 tag 未移动。至此 Phase 3 不可变里程碑已完成远端归档；本小步
+未构建、安装或运行 NPU。
 
 ### Phase 3 远端 branch 归档（已完成）
 
