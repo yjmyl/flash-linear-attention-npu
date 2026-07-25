@@ -18,7 +18,8 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase | 分支 | Git 里程碑 | 说明 |
 | --- | --- | --- | --- |
 | Phase 1 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 历史恢复点；版本化 ACLNN 已与 Phase 2 并存 |
-| Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能门禁已收口，待追加性能证据 commit，不移动该 tag |
+| Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能证据由后续 commit `2b8161d` 追加，不移动该 tag |
+| Phase 3 | `gdn-a2-phase-archive` | 待创建 `gdn-a2-phase3^{commit}` | 实现和 A2 验收已完成；待提交清单与归档前门禁通过后创建 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -28,9 +29,10 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | --- | --- | --- | --- |
 | Phase 1 | `aclnnGdnCoreFwdPhase1` / `gdn_core_fwd_phase1` | `local_cumsum -> KKT -> cast -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o` | 已恢复并通过 A2 smoke |
 | Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化，并按冻结范围完成 A2 功能/精度/生产性能收口 |
+| Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 收口，待 Git 里程碑 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
-Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1 和 Phase 2 在一个包内并存，后续 Phase 3 必须新增独立入口。
+Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
 
 ## 代码与验证入口
 
@@ -45,7 +47,11 @@ Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_t
 ```text
 phase1_one_aclnn_six_kernels
 phase2_one_aclnn_fused_kkt_solve
+phase3_one_aclnn_fused_cumsum_kkt
 ```
+
+Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径是累积单 kernel
+`ChunkCumsumKktSolveTri`，不再是早期 `ChunkCumsumKkt -> Cast -> SolveTri` 拆分候选。
 
 ## 归档门禁
 
@@ -79,3 +85,16 @@ phase2_one_aclnn_fused_kkt_solve
 - 详细矩阵、workspace/peak、异常复测和剩余范围见 `GDN_PHASE2_ACCEPTANCE_A2.md`。
 
 性能收口只追加测试、报告和归档元数据，不改变 `gdn-a2-phase2` 指向的 `f2a4b46` 代码快照。应在当前归档分支新增普通 commit 保存正式 benchmark/runner、报告和文档，禁止 amend 旧里程碑或移动 tag。
+
+## 2026-07-26 Phase 3 验收收口
+
+- 最终边界为单 `ChunkCumsumKktSolveTri`：raw FP32 cumsum + KKT + low-precision hand-off + solve_tri；
+- 完整 run 包 SHA256：`837742c6731143ec0ea55c517338e0daca3d3f295b9b7a71f079805b9b62bfdb`；
+- 安装 host 库 SHA256：`645336f9f65c522a06d74cf8b3df0ca6db2ae493fcd6fec980719eca7c8af07f`；
+- 独立 `ChunkCumsumKkt` 最终共享 helper `80/80 exact`，core dense/varlen `8/8` 加 state `1/1` bit-exact/有限；
+- 独立局部和完整 core 生产性能矩阵均 `8/8` median 改善；core workspace/peak 对 Phase 2 持平；
+- profiler 证明完整 core NPU kernel 数 `9 -> 8`，目标段由两个 kernel 合并为一个；
+- 详细证据与范围边界见 `GDN_PHASE3_ACCEPTANCE_A2.md`。
+
+Phase 3 提交后创建不可变 `gdn-a2-phase3` annotated tag 并登记精确 commit SHA。该 tag 尚未创建前，
+不得将“待创建”状态写成已归档，也不得移动 `gdn-a2-phase2`。

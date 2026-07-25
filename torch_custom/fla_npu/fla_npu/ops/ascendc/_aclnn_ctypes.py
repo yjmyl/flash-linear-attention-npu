@@ -104,6 +104,17 @@ _GET_WORKSPACE_ARGTYPES = {
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.POINTER(ctypes.c_void_p),
     ],
+    "aclnnGdnCoreFwdPhase3": [
+        *([ctypes.c_void_p] * 6),
+        ctypes.c_bool,
+        ctypes.c_int64,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_double,
+        *([ctypes.c_void_p] * 4),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_void_p),
+    ],
     "aclnnChunkLocalCumsum": [
         ctypes.c_void_p,
         ctypes.c_void_p,
@@ -120,6 +131,14 @@ _GET_WORKSPACE_ARGTYPES = {
     "aclnnChunkScaledDotKkt": [
         *([ctypes.c_void_p] * 5),
         ctypes.c_int64,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_void_p),
+    ],
+    "aclnnChunkCumsumKkt": [
+        *([ctypes.c_void_p] * 5),
+        ctypes.c_int64,
+        ctypes.c_void_p,
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.POINTER(ctypes.c_void_p),
@@ -726,6 +745,11 @@ def npu_gdn_core_fwd_phase2(q, k, v, g, beta, **kwargs):
     return _npu_gdn_core_fwd("aclnnGdnCoreFwdPhase2", q, k, v, g, beta, **kwargs)
 
 
+def npu_gdn_core_fwd_phase3(q, k, v, g, beta, **kwargs):
+    """Call the immutable Phase 3 fused local-cumsum + KKT checkpoint."""
+    return _npu_gdn_core_fwd("aclnnGdnCoreFwdPhase3", q, k, v, g, beta, **kwargs)
+
+
 def npu_chunk_local_cumsum(
     g,
     chunk_size,
@@ -793,6 +817,65 @@ def npu_chunk_scaled_dot_kkt(
             ctx.tensor(out, "A"),
         ],
         out,
+    )
+
+
+def npu_chunk_cumsum_kkt(
+    k,
+    g,
+    beta,
+    *,
+    cu_seqlens=None,
+    chunk_indices=None,
+    chunk_size=64,
+):
+    import torch
+
+    k_shape = _shape(k)
+    g_shape = _shape(g)
+    beta_shape = _shape(beta)
+    if len(k_shape) != 4 or len(g_shape) != 3 or beta_shape != g_shape:
+        raise RuntimeError("npu_chunk_cumsum_kkt: expected k=[B,H,T,128], g/beta=[B,H,T].")
+    if k_shape[3] != 128 or k_shape[:3] != g_shape:
+        raise RuntimeError("npu_chunk_cumsum_kkt: k, g and beta must use matching physical heads.")
+    if k.dtype not in (torch.float16, torch.bfloat16):
+        raise RuntimeError("npu_chunk_cumsum_kkt: k must be float16 or bfloat16.")
+    if g.dtype != torch.float32 or beta.dtype != torch.float32:
+        raise RuntimeError("npu_chunk_cumsum_kkt: g and beta must be float32.")
+    if chunk_size not in (64, 128):
+        raise RuntimeError("npu_chunk_cumsum_kkt: chunk_size must be 64 or 128.")
+    if (cu_seqlens is None) != (chunk_indices is None):
+        raise RuntimeError("npu_chunk_cumsum_kkt: variable-length metadata must be provided together.")
+    if cu_seqlens is not None:
+        cu_seqlens = tuple(int(value) for value in cu_seqlens)
+        chunk_indices = tuple(int(value) for value in chunk_indices)
+        if k_shape[0] != 1 or len(cu_seqlens) < 2 or cu_seqlens[0] != 0 or cu_seqlens[-1] != k_shape[2]:
+            raise RuntimeError("npu_chunk_cumsum_kkt: invalid cu_seqlens for physical B=1 input.")
+        expected_indices = []
+        for seq, (begin, end) in enumerate(zip(cu_seqlens, cu_seqlens[1:])):
+            if begin > end:
+                raise RuntimeError("npu_chunk_cumsum_kkt: cu_seqlens must be nondecreasing.")
+            for local_chunk in range((end - begin + chunk_size - 1) // chunk_size):
+                expected_indices.extend((seq, local_chunk))
+        if tuple(expected_indices) != chunk_indices:
+            raise RuntimeError("npu_chunk_cumsum_kkt: chunk_indices must use canonical sequence-major order.")
+
+    g_cumsum = _empty(g_shape, g, dtype=torch.float32)
+    A = _empty((k_shape[0], k_shape[1], k_shape[2], int(chunk_size)), k, dtype=torch.float32)
+    outputs = (g_cumsum, A)
+    return _call_aclnn(
+        "aclnnChunkCumsumKkt",
+        lambda ctx: [
+            ctx.tensor(k, "k"),
+            ctx.tensor(g, "g"),
+            ctx.tensor(beta, "beta"),
+            ctx.int_array(cu_seqlens),
+            ctx.int_array(chunk_indices),
+            ctypes.c_int64(int(chunk_size)),
+            ctx.tensor(g_cumsum, "g_cumsum"),
+            ctx.tensor(A, "A"),
+        ],
+        outputs,
     )
 
 

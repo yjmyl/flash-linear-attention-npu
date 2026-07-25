@@ -132,6 +132,75 @@ local_cumsum -> KKT -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o
 
 当前工作区中的 `ChunkCumsumKkt` 属于这个方向的探索性实现，不改变 Phase 2 的正式优先级。
 
+#### Phase 3 启动卡（2026-07-25 冻结）
+
+| 项目 | 冻结内容 |
+| --- | --- |
+| 基线 | 局部基线为同一完整包中的 `aclnnChunkLocalCumsum -> aclnnChunkScaledDotKkt`；端到端基线为不可变 `aclnnGdnCoreFwdPhase2` |
+| 首个融合边界 | 仅 `raw g -> chunk-local FP32 forward cumsum` 与 `KKT`；首版独立输出 `g_cumsum` 和未求解 `A_raw` |
+| 输入 | `k=[B,H,T,128]` FP16/BF16；`g,beta=[B,H,T]` FP32；dense 时无可选元数据，varlen 时同时提供 INT64 `cu_seqlens` 与 `[seq,local_chunk]` `chunk_indices` |
+| 输出 | `g_cumsum=[B,H,T]` FP32；`A_raw=[B,H,T,C]` FP32，`C=64/128` |
+| 物理布局/头契约 | head-first ND；探索实现的 tiling 明确要求物理 `k.H == g.H == beta.H`，首版不实现原生 `Hk != Hv` |
+| 保留项 | 保留公开 `g_cumsum` GM 输出、KKT score workspace、现有 transpose/contiguous、外部 GVA 扩头和 Phase 2 `ChunkKktSolveTri` 路径 |
+| 不做项 | 不接 `solve_tri`，不创建 Phase 3 core 调度，不改 Phase 1/2，不做 reverse/scale cumsum，不扩 `V=256`、原生 GVA、causal conv、RMSNorm/gate 或 workspace 别名 |
+| 独立入口 | 新增 `aclnnChunkCumsumKkt`、torch/Python wrapper 和专项测试；现有探索实现只有 OpDef/tiling/kernel/L0，尚不能直接做独立 ACLNN A/B |
+
+静态执行语义按源码冻结为：每个物理 head、每个序列、每个 chunk 内从 raw FP32 `g` 按 token
+顺序做 `values[row] += values[row-1]`，同一 FP32 UB 结果既写出公开 `g_cumsum`，也直接进入 KKT
+gate epilogue。验收时必须把公开输出和内部 compute view 分开记录；只有源码和逐位证据同时证明
+二者一致后，才允许以公开 `g_cumsum` 代表内部视图。
+
+路由身份不能只写算子名。A2/CANN `9.1.0.beta1` 下首轮冻结 8 个完整身份：
+
+```text
+(FP16/BF16 k) × (C64/C128) × (dense/varlen optional-input state)
+```
+
+源码 tiling key 为 FP16 C64=`10`、BF16 C64=`20`、FP16 C128=`778`、BF16 C128=`788`；
+dense/varlen 共用 key 但走不同 `isVarlen` 子路径，因此仍分开验收。实际二进制必须用 profiler 再
+确认 `ChunkCumsumKkt` kernel 名、tiling key 和 block dim，不能只由源码公式推定。
+
+最低验收矩阵和成功标准：
+
+1. 先做 1 个 dense FP16/C64 最小 smoke，只证明独立 ACLNN 可调用、两个输出 shape/dtype 正确且有限。
+2. 再覆盖 dense/varlen、FP16/BF16、C64/C128、整 chunk/尾块、多 batch/多头；每个完整路由身份至少 `10` 个 exact case。
+3. `g_cumsum` 全有效元素对两小算子 NPU 拼接基线逐位一致；`A_raw` 严格下三角有效值逐位一致，并单独断言对角、上三角和尾块 padding 为零。基线非有限时改用 CPU FP64 参考，不把 NaN/Inf 当 golden。
+4. profiler 证明局部 ACLNN 数 `2 -> 1` 且实际 NPU kernel 数减少；生产计时关闭 launch blocking，固定 warmup/iteration，AB/BA 测 median、P90、min。
+5. 局部融合 median 不劣于两小算子基线；随后新增不可变 `aclnnGdnCoreFwdPhase3`，端到端 median 不劣于 Phase 2。若局部无收益，停止接入 core并保留 Phase 2。
+6. 记录 fused/baseline workspace max/sum、peak delta 和绝对值；相对基线额外显存不得超过 `50 MB`，绝对 `50 MB` 口径继续单列，不混淆。
+
+Phase 3 的第一个实现小步只补 `ChunkCumsumKkt` 独立 ACLNN、torch/Python wrapper、ABI/静态测试
+和最小 smoke 脚本，不修改现有 kernel、tiling、数学顺序或 Phase 2 调度。该入口通过最小 smoke
+前，不开始完整 exact 矩阵，更不接入 `solve_tri` 或 `GdnCoreFwdPhase3`。
+
+#### Phase 3 core 累积融合修正卡（2026-07-25 冻结）
+
+局部 `ChunkCumsumKkt` 已完成 frozen 8 identities 共 `80/80` exact，随后探索性 Phase 3 core
+使用 `ChunkCumsumKkt -> Cast -> SolveTri`。生产 pilot 和完整 core profiler 证明该路由相对
+Phase 2 median 回退 `3.682%`，且将 core NPU kernel 数从 `9` 增至 `10`；根因是吸收 cumsum 时
+丢失了 Phase 2 已完成的 KKT + solve_tri 融合。因此 Phase 3 最终验收边界修正为累积融合：
+
+```text
+raw FP32 g -> chunk-local FP32 cumsum -> KKT -> low-precision hand-off -> solve_tri
+```
+
+| 项目 | 冻结内容 |
+| --- | --- |
+| Phase 2 不可变基线 | `aclnnGdnCoreFwdPhase2` 保持 `ChunkLocalCumsum -> ChunkKktSolveTri`，不原地修改 |
+| Phase 3 专用 kernel | 新增 `ChunkCumsumKktSolveTri`；不改写已完成独立精度证据的 `ChunkCumsumKkt` contract |
+| 输入 | 与 Phase 3 局部算子一致：`k=[B,H,T,128]` FP16/BF16，raw `g/beta=[B,H,T]` FP32，dense/varlen canonical metadata |
+| 输出 | 公开 `g_cumsum=[B,H,T]` FP32；已求解 `A=[B,H,T,C]` 与 `k` 同 dtype，`C=64/128` |
+| workspace | 复用 Phase 2 已验证布局：FP32 score、低精度 A hand-off、每个 MIX core group 的 solve workspace；不做输出/workspace 别名 |
+| 同步 | AIC 生成 score；配对 AIV 使用已 `80/80 exact` 的 cumsum/KKT epilogue并写低精度 A；AIV 以 `PIPE_MTE3` 发出 `KKT_READY`，配对 AIC 只等待一次后进入 solve |
+| public/compute cumsum | 继续使用已验证的 `MTE2_V -> V_MTE3 -> MTE3_MTE2 -> MTE3_V` 顺序；公开 FP32 输出写回后再读作 KKT compute view |
+| core 调度 | `aclnnGdnCoreFwdPhase3` 直接消费该 kernel 的两个输出，不再调度独立 Cast 或 SolveTri |
+| 保留边界 | head-first ND、外部 GVA 扩头、`K==V==128`、现有 transpose、dense/varlen metadata 和 Phase 1/2 固定入口不变 |
+| 性能门槛 | profiler 预期完整 core kernel 数 `9 -> 8`；生产 median 必须不劣于 Phase 2，否则 Phase 3 不收口 |
+
+实现顺序固定为：新增 op/kernel 静态注册与 L0 -> Phase 3 core 改接 -> 完整包最小 smoke -> 独立
+精度/主路由/state 回归 -> 单点生产性能门禁 -> 全矩阵 -> profiler/workspace -> 验收与归档。任何一层
+失败先刷新 `GDN_CURRENT_STATUS_A2.md`，不跨层继续。
+
 ### Phase 4：吸收 recompute_w_u
 
 目标是让求解后的 A 尽量直接供 `recompute_w_u` 使用，减少：
@@ -267,7 +336,7 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - Phase 1 因此关闭，后续默认从 Phase 2 开始
 - Phase 1 的六独立 kernel 复合调度已恢复并固化为 `aclnnGdnCoreFwdPhase1`；不再由通用入口的当前实现隐式代表
 
-截至 2026-07-25，Phase 2 已按冻结范围完成实现、功能/精度和生产性能门禁，可以进入 Phase 3 启动卡：
+截至 2026-07-25，Phase 2 已按冻结范围完成实现、功能/精度和生产性能门禁：
 
 - 独立 `ChunkKktSolveTri` A/B：`6/6 PASS`，覆盖 dense/varlen、FP16/BF16、`chunk_size=64/128`、多 batch/头数和尾块
 - 4 组端到端 GDN core 消融场景通过；输出、`g_cumsum` 和有效 `A` 区域与基线一致
@@ -279,16 +348,21 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - 生产可比较 case 的最大相对增量为 `8.86 MB` workspace / `8.39 MB` peak；单 ACLNN 绝对 workspace `<=50 MB` 口径未满足，需与相对增量口径区分
 - 完整结果见 `GDN_PHASE2_ACCEPTANCE_A2.md`
 
-当前工作区已经有：
+截至 2026-07-26，Phase 3 已按累积融合修正卡完成实现和 A2 验收：
 
-- 六算子路径和统一 `aclnnGdnCoreFwd` 的实现/测试改动
-- `gdn_core_ablation.md` 消融 benchmark 说明
-- `aclnnGdnCoreFwd.md` 复合 ACLNN 接口说明
-- `ChunkCumsumKkt` 探索性实现
-- 已验收的 Phase 2 `ChunkKktSolveTri` 实现和独立 A/B 测试
-- 可并存构建和调用的 `aclnnGdnCoreFwdPhase1` / `aclnnGdnCoreFwdPhase2` 固定入口
+- 最终累积边界为单 `ChunkCumsumKktSolveTri`：raw FP32 cumsum + KKT + low-precision hand-off + solve_tri；
+- 独立 `ChunkCumsumKkt` 的最终共享 helper 完成 `80/80 exact`，core dense/varlen `8/8` 加 state
+  `1/1` 均对不可变 Phase 2 bit-exact/有限；
+- 独立局部和完整 core 的生产性能矩阵均 `8/8` median 改善；
+- profiler 证明完整 core NPU kernel 数 `9 -> 8`，目标段由两个 kernel 合并为一个；
+- 完整 run 包 SHA256 为 `837742c6731143ec0ea55c517338e0daca3d3f295b9b7a71f079805b9b62bfdb`，
+  安装 host 库 SHA256 为 `645336f9f65c522a06d74cf8b3df0ca6db2ae493fcd6fec980719eca7c8af07f`；
+- `aclnnGdnCoreFwdPhase1/2/3` 与默认入口可在同一包内并存，默认入口仍保持 Phase 2 兼容行为；
+- 完整结果见 `GDN_PHASE3_ACCEPTANCE_A2.md`。
 
-这些改动仍可能处于未提交状态。它们是当前工作区状态，不代表本文档中的后续阶段都已经完成。下一步先归档 **Phase 2 性能收口增量**；之后填写 Phase 3 启动卡，先独立验证 `ChunkCumsumKkt`，不直接替换已验证的 Phase 2 路径。
+Phase 3 当前仍处于未提交工作区，尚未创建 `gdn-a2-phase3` 不可变 tag。只有正式提交清单、归档前
+门禁、里程碑 commit、tag 和远端只读回查全部完成后，才能将 Phase 3 标记为 Git 已归档；Phase 4
+不得在此之前启动。
 
 ## 8. 相关文件
 
@@ -298,4 +372,5 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - 消融脚本：`torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py`
 - GDN Python 入口：`examples/flash_gated_delta_rule.py`
 - Phase 2 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE2_ACCEPTANCE_A2.md`
+- Phase 3 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE3_ACCEPTANCE_A2.md`
 - A2 GDN 融合开发手册：`fla/ops/ascendc/gdn/docs/GDN_FUSION_DEVELOPMENT_PLAYBOOK_A2.md`

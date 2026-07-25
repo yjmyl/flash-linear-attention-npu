@@ -26,6 +26,12 @@ GDN_CORE_CPP = (
     Path(__file__).resolve().parents[3]
     / "fla/ops/ascendc/gdn/chunk_gdn_fwd/chunk_gated_delta_rule_fwd_h/op_host/op_api/aclnn_gdn_core_fwd.cpp"
 )
+CHUNK_CUMSUM_KKT_HEADER = (
+    Path(__file__).resolve().parents[3]
+    / "fla/ops/ascendc/gdn/gdn_preprocess/chunk_scaled_dot_kkt/op_host/op_api/aclnn_chunk_cumsum_kkt.h"
+)
+NPU_CUSTOM_YAML = Path(__file__).resolve().parents[1] / "npu_custom.yaml"
+ASCENDC_INIT = ASCENDC_DIR / "__init__.py"
 
 
 class FakeTensor:
@@ -206,11 +212,13 @@ class GdnCoreFwdCtypesAbiTest(unittest.TestCase):
         self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwd"], expected)
         self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase1"], expected)
         self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase2"], expected)
+        self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase3"], expected)
 
     def test_versioned_phase_wrappers_use_fixed_aclnn_symbols(self):
         for wrapper_name, aclnn_name in (
             ("npu_gdn_core_fwd_phase1", "aclnnGdnCoreFwdPhase1"),
             ("npu_gdn_core_fwd_phase2", "aclnnGdnCoreFwdPhase2"),
+            ("npu_gdn_core_fwd_phase3", "aclnnGdnCoreFwdPhase3"),
         ):
             with self.subTest(wrapper=wrapper_name):
                 captured = {}
@@ -226,6 +234,10 @@ class GdnCoreFwdCtypesAbiTest(unittest.TestCase):
         self.assertIn("l0op::SolveTri", source)
         self.assertIn("GdnCorePhase::PHASE_2_FUSED_KKT_SOLVE", source)
         self.assertIn("l0op::ChunkKktSolveTri", source)
+        self.assertIn("GdnCorePhase::PHASE_3_FUSED_CUMSUM_KKT_SOLVE", source)
+        self.assertIn("l0op::ChunkCumsumKktSolveTri", source)
+        self.assertNotIn("l0op::ChunkCumsumKkt(", source)
+        self.assertIn("aclnnGdnCoreFwdPhase3GetWorkspaceSize", source)
 
     def test_preprocess_direct_wrappers_match_aclnn_descriptor_kinds(self):
         captured = {}
@@ -254,6 +266,42 @@ class GdnCoreFwdCtypesAbiTest(unittest.TestCase):
         )
         self.assertEqual(captured["name"], "aclnnChunkScaledDotKkt")
         self.assertEqual(captured["ctx"].int_array_calls, [[0, 64, 128], [0, 0, 1, 0]])
+
+        g_cumsum, A = module.npu_chunk_cumsum_kkt(
+            inputs["k"],
+            FakeTensor((1, 4, 128), "float32"),
+            FakeTensor((1, 4, 128), "float32"),
+            cu_seqlens=[0, 64, 128],
+            chunk_indices=[0, 0, 1, 0],
+            chunk_size=64,
+        )
+        self.assertEqual(captured["name"], "aclnnChunkCumsumKkt")
+        self.assertEqual(g_cumsum.shape, (1, 4, 128))
+        self.assertEqual(g_cumsum.dtype, "float32")
+        self.assertEqual(A.shape, (1, 4, 128, 64))
+        self.assertEqual(A.dtype, "float32")
+        self.assertEqual(captured["ctx"].int_array_calls, [(0, 64, 128), (0, 0, 1, 0)])
+        self.assertEqual(len(captured["args"]), 8)
+        self.assertEqual(
+            module._GET_WORKSPACE_ARGTYPES["aclnnChunkCumsumKkt"],
+            [
+                *([ctypes.c_void_p] * 5),
+                ctypes.c_int64,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint64),
+                ctypes.POINTER(ctypes.c_void_p),
+            ],
+        )
+
+    def test_chunk_cumsum_kkt_public_surfaces_are_declared(self):
+        header = CHUNK_CUMSUM_KKT_HEADER.read_text(encoding="utf-8")
+        schema = NPU_CUSTOM_YAML.read_text(encoding="utf-8")
+        package_init = ASCENDC_INIT.read_text(encoding="utf-8")
+        self.assertIn("aclnnChunkCumsumKktGetWorkspaceSize", header)
+        self.assertIn("aclnnChunkCumsumKkt(", header)
+        self.assertIn("npu_chunk_cumsum_kkt(Tensor k, Tensor g, Tensor beta", schema)
+        self.assertIn('"npu_chunk_cumsum_kkt"', package_init)
 
     def test_fused_kkt_solve_wrapper_matches_public_aclnn_signature(self):
         captured = {}

@@ -8,6 +8,7 @@ Versioned entries preserve ablation checkpoints:
 | --- | --- |
 | `aclnnGdnCoreFwdPhase1` | six independent GDN stage kernels in one executor |
 | `aclnnGdnCoreFwdPhase2` | fused `ChunkKktSolveTri` plus the other four stage kernels |
+| `aclnnGdnCoreFwdPhase3` | cumulative `ChunkCumsumKktSolveTri` plus the remaining three stage kernels |
 | `aclnnGdnCoreFwd` | compatibility alias, currently equivalent to Phase 2 |
 
 Phase 1 preserves:
@@ -18,8 +19,11 @@ recompute_w_u -> chunk_gated_delta_rule_fwd_h -> chunk_fwd_o
 ```
 
 Phase 2 replaces KKT and solve_tri with `ChunkKktSolveTri`. Both fixed entries
-share the same public tensor contract and are exported by the same package so
-they can be compared without reinstalling a different wheel.
+Phase 3 additionally absorbs the raw-g local cumsum into
+`ChunkCumsumKktSolveTri`, while preserving the public FP32 `gCumsumOut` and the
+same solved-A contract. All fixed entries share the same public tensor contract
+and are exported by the same package so they can be compared without
+reinstalling a different wheel.
 
 ## Interface
 
@@ -94,8 +98,9 @@ o, final_state, g_cumsum, a = gdn_core_fwd(
 )
 ```
 
-Use `gdn_core_fwd_phase1` and `gdn_core_fwd_phase2` for permanent Phase A/B.
-The unversioned `gdn_core_fwd` is only the current default.
+Use `gdn_core_fwd_phase1`, `gdn_core_fwd_phase2`, and `gdn_core_fwd_phase3` for
+permanent Phase A/B. The unversioned `gdn_core_fwd` is only the current default
+and remains equivalent to Phase 2 for compatibility.
 
 The public wrapper is eager-only. The forward's existing Python autograd wrapper
 continues to use the established GDN backward chain.

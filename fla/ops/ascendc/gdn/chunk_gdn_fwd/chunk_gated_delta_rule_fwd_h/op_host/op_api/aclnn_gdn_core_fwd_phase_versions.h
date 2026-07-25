@@ -67,6 +67,34 @@ aclnnStatus aclnnGdnCoreFwdPhase2(
     aclOpExecutor *executor,
     aclrtStream stream);
 
+/** Phase 3 checkpoint: local cumsum + KKT + solve_tri use ChunkCumsumKktSolveTri. */
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase3GetWorkspaceSize(
+    const aclTensor *q,
+    const aclTensor *k,
+    const aclTensor *v,
+    const aclTensor *g,
+    const aclTensor *beta,
+    const aclTensor *initialStateOptional,
+    bool outputFinalState,
+    int64_t chunkSize,
+    const aclIntArray *cuSeqlensOptional,
+    const aclIntArray *chunkIndicesOptional,
+    double scale,
+    const aclTensor *oOut,
+    const aclTensor *finalStateOutOptional,
+    const aclTensor *gCumsumOut,
+    const aclTensor *aOut,
+    uint64_t *workspaceSize,
+    aclOpExecutor **executor);
+
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase3(
+    void *workspace,
+    uint64_t workspaceSize,
+    aclOpExecutor *executor,
+    aclrtStream stream);
+
 #ifdef __cplusplus
 }
 #endif

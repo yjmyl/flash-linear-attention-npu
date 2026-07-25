@@ -246,4 +246,8 @@ ge::graphStatus ChunkKktSolveTriTilingParse(gert::TilingParseContext *context)
 IMPL_OP_OPTILING(ChunkKktSolveTri)
     .Tiling(ChunkKktSolveTriTilingFunc)
     .TilingParse<ChunkKktSolveTriCompileInfo>(ChunkKktSolveTriTilingParse);
+
+IMPL_OP_OPTILING(ChunkCumsumKktSolveTri)
+    .Tiling(ChunkKktSolveTriTilingFunc)
+    .TilingParse<ChunkKktSolveTriCompileInfo>(ChunkKktSolveTriTilingParse);
 }  // namespace optiling

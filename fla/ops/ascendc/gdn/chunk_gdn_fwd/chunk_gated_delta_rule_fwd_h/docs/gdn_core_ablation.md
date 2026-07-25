@@ -28,7 +28,11 @@ the same script rather than creating independent benchmarks.
 
 Permanent one-ACLNN checkpoints are named
 `phase1_one_aclnn_six_kernels` and
-`phase2_one_aclnn_fused_kkt_solve`. The unversioned `composite_one_aclnn`
+`phase2_one_aclnn_fused_kkt_solve`, and
+`phase3_one_aclnn_fused_cumsum_kkt`. The Phase 3 variant name is retained for
+report compatibility, but its final route is cumulative
+`ChunkCumsumKktSolveTri` (`cumsum + KKT + solve_tri`), not the rejected split
+`ChunkCumsumKkt -> Cast -> SolveTri` candidate. The unversioned `composite_one_aclnn`
 tracks the current default and must not be used as the only historical A/B.
 
 Phase 2 also adds the five-call `fused_kkt_solve` variant. It replaces only

@@ -27,6 +27,7 @@ from fla_npu.ops.ascendc import _runtime as ascendc_runtime
 STANDALONE_VARIANTS = (
     "phase1_one_aclnn_six_kernels",
     "phase2_one_aclnn_fused_kkt_solve",
+    "phase3_one_aclnn_fused_cumsum_kkt",
 )
 
 
@@ -267,6 +268,10 @@ def run_composite_phase1(inputs: dict):
 
 def run_composite_phase2(inputs: dict):
     return run_composite_with(ascendc.gdn_core_fwd_phase2, inputs)
+
+
+def run_composite_phase3(inputs: dict):
+    return run_composite_with(ascendc.gdn_core_fwd_phase3, inputs)
 
 
 def tensor_finiteness(tensor: torch.Tensor | None) -> dict:
@@ -629,6 +634,7 @@ def run_standalone(args, inputs: dict) -> None:
     functions = {
         "phase1_one_aclnn_six_kernels": run_composite_phase1,
         "phase2_one_aclnn_fused_kkt_solve": run_composite_phase2,
+        "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
     }
     function = functions[args.standalone_variant]
     outputs = function(inputs)
@@ -668,6 +674,31 @@ def run_standalone(args, inputs: dict) -> None:
     print(json.dumps(report, indent=2))
 
 
+def run_phase3_accuracy(args, inputs: dict) -> None:
+    phase2 = run_composite_phase2(inputs)
+    phase3 = run_composite_phase3(inputs)
+    torch.npu.synchronize()
+    comparison = compare_results(phase2, phase3, inputs)
+    finiteness = {
+        "phase2_one_aclnn_fused_kkt_solve": standalone_finiteness(phase2, inputs),
+        "phase3_one_aclnn_fused_cumsum_kkt": standalone_finiteness(phase3, inputs),
+    }
+    if not comparison["bit_exact"]:
+        raise AssertionError(f"Phase 3 is not bit exact with Phase 2: {comparison}")
+    if not all(item["all_finite"] for item in finiteness.values()):
+        raise AssertionError(f"Phase 2/3 produced non-finite output/state: {finiteness}")
+    report = {
+        "case_id": args.case_id,
+        "measurement": {"method": "phase2_phase3_accuracy_only"},
+        "contract": contract_report(args, inputs),
+        "accuracy": {"phase3_vs_phase2": comparison},
+        "finiteness": finiteness,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=int(os.environ.get("TEST_DEVICE_ID", 0)))
@@ -695,12 +726,20 @@ def main() -> None:
         default="",
         help="Run exactly one versioned composite variant in this process.",
     )
+    parser.add_argument(
+        "--phase3-accuracy-only",
+        action="store_true",
+        help="Compare only the immutable Phase 2 and Phase 3 core checkpoints.",
+    )
     parser.add_argument("--case-id", default="")
     parser.add_argument("--output", type=Path, default=Path("gdn_core_ablation.json"))
     args = parser.parse_args()
 
-    if args.paired_only and args.standalone_variant:
-        parser.error("--paired-only and --standalone-variant are mutually exclusive")
+    selected_modes = sum(bool(value) for value in (
+        args.paired_only, args.standalone_variant, args.phase3_accuracy_only
+    ))
+    if selected_modes > 1:
+        parser.error("--paired-only, --standalone-variant and --phase3-accuracy-only are mutually exclusive")
 
     torch.npu.set_device(args.device)
     torch.npu.set_compile_mode(jit_compile=False)
@@ -708,23 +747,28 @@ def main() -> None:
     if args.standalone_variant:
         run_standalone(args, inputs)
         return
+    if args.phase3_accuracy_only:
+        run_phase3_accuracy(args, inputs)
+        return
     kkt_solve_inputs = make_kkt_solve_inputs(inputs)
     legacy = run_legacy(inputs)
     composite = run_composite(inputs)
     composite_phase1 = run_composite_phase1(inputs)
     composite_phase2 = run_composite_phase2(inputs)
+    composite_phase3 = run_composite_phase3(inputs)
     fused = run_fused_kkt_solve(inputs)
     torch.npu.synchronize()
     accuracy = {
         "composite_one_aclnn": compare_results(legacy, composite, inputs),
         "phase1_one_aclnn_six_kernels": compare_results(legacy, composite_phase1, inputs),
         "phase2_one_aclnn_fused_kkt_solve": compare_results(legacy, composite_phase2, inputs),
+        "phase3_one_aclnn_fused_cumsum_kkt": compare_results(legacy, composite_phase3, inputs),
         "fused_kkt_solve": compare_results(legacy, fused, inputs),
     }
     for name, comparison in accuracy.items():
         if not comparison["bit_exact"]:
             raise AssertionError(f"{name} is not bit exact: {comparison}")
-    del legacy, composite, composite_phase1, composite_phase2, fused
+    del legacy, composite, composite_phase1, composite_phase2, composite_phase3, fused
 
     stage_raw = run_kkt_stage(kkt_solve_inputs)
     if kkt_solve_inputs["cu_seqlens"] is None:
@@ -750,6 +794,7 @@ def main() -> None:
         "composite_one_aclnn": run_composite,
         "phase1_one_aclnn_six_kernels": run_composite_phase1,
         "phase2_one_aclnn_fused_kkt_solve": run_composite_phase2,
+        "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
         "fused_kkt_solve": run_fused_kkt_solve,
     }
     results = {}
@@ -790,6 +835,7 @@ def main() -> None:
         "composite_one_aclnn": 1,
         "phase1_one_aclnn_six_kernels": 1,
         "phase2_one_aclnn_fused_kkt_solve": 1,
+        "phase3_one_aclnn_fused_cumsum_kkt": 1,
         "fused_kkt_solve": 5,
     }
     for name, expected in expected_calls.items():
@@ -803,6 +849,15 @@ def main() -> None:
             run_composite_phase1,
             "phase2_one_aclnn_fused_kkt_solve",
             run_composite_phase2,
+            inputs,
+            args.warmup,
+            args.iterations,
+        ),
+        "core_phase2_vs_phase3": measure_paired_latency(
+            "phase2_one_aclnn_fused_kkt_solve",
+            run_composite_phase2,
+            "phase3_one_aclnn_fused_cumsum_kkt",
+            run_composite_phase3,
             inputs,
             args.warmup,
             args.iterations,

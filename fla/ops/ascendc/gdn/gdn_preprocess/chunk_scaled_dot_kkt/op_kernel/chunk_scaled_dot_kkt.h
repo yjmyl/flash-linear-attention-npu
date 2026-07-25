@@ -232,14 +232,15 @@ private:
         }
 
         const int64_t ghOffset = (b * Hv_ + h) * T_ + rowStart;
-        CopyTaskVector(gGm, ghOffset, gQueue_, valid);
+        if (fusedCumsum_) {
+            ComputePrefixCumsumFromGm(ghOffset, valid);
+            CopyTaskVector(gCumsumGm, ghOffset, gQueue_, valid);
+        } else {
+            CopyTaskVector(gGm, ghOffset, gQueue_, valid);
+        }
         CopyTaskVector(betaGm, ghOffset, betaQueue_, valid);
         LocalTensor<float> gLocal = gQueue_.template DeQue<float>();
         LocalTensor<float> betaLocal = betaQueue_.template DeQue<float>();
-        if (fusedCumsum_) {
-            ComputePrefixCumsum(gLocal, valid);
-            CopyTaskVectorOut(gCumsumGm, ghOffset, gLocal, valid);
-        }
 
         const int64_t scoreBaseOffset = task * BT_ * BT_;
         const int64_t outBaseOffset = ((b * Hk_ + h) * T_ + rowStart) * BT_;
@@ -378,19 +379,6 @@ private:
         queue.EnQue(local);
     }
 
-    __aicore__ inline void CopyTaskVectorOut(GlobalTensor<float> &dstGm, int64_t gmOffset,
-                                             LocalTensor<float> local, int64_t count)
-    {
-        WaitVToMte3();
-        DataCopyParams params;
-        params.blockCount = 1;
-        params.blockLen = static_cast<uint16_t>(count * static_cast<int64_t>(sizeof(float)));
-        params.srcStride = 0;
-        params.dstStride = 0;
-        DataCopyPad(dstGm[gmOffset], local, params);
-        WaitMte3ToV();
-    }
-
     __aicore__ inline void CopyTypedOutTile(int64_t outBaseOffset,
                                             int64_t outRowStride,
                                             LocalTensor<OutputType> outTileLocal,
@@ -408,16 +396,91 @@ private:
         WaitMte3ToV();
     }
 
-    __aicore__ inline void ComputePrefixCumsum(const LocalTensor<float> &gLocal, int64_t count)
+    __aicore__ inline void ComputePrefixCumsumFromGm(int64_t gmOffset, int64_t count)
     {
-        // A single head is stored as a contiguous vector, so token offsets after the
-        // first one are not all 32-byte aligned. Use scalar UB arithmetic here; the
-        // following KKT epilogue still uses aligned vector operations.
-        __ubuf__ float *values = (__ubuf__ float *)gLocal.GetPhyAddr();
-        for (int64_t row = 1; row < count; ++row) {
-            values[row] += values[row - 1];
+        // Match ChunkLocalCumsum's sequential FP32 vector-add order. The temporary
+        // scalars live at separate 32-byte-aligned UB addresses; the public FP32
+        // output is then reloaded as the KKT compute view.
+        LocalTensor<float> accLocal = rowBrcbBuf_.Get<float>();
+        LocalTensor<float> inputPing = rowBrcbBuf_.Get<float>()[FP32_BLOCK_ELEMS];
+        LocalTensor<float> inputPong = rowBrcbBuf_.Get<float>()[2 * FP32_BLOCK_ELEMS];
+        LocalTensor<float> outputPing = rowBrcbBuf_.Get<float>()[3 * FP32_BLOCK_ELEMS];
+        LocalTensor<float> outputPong = rowBrcbBuf_.Get<float>()[4 * FP32_BLOCK_ELEMS];
+        DataCopyParams params{1, static_cast<uint16_t>(sizeof(float)), 0, 0};
+        DataCopyPadParams padParams{false, 0, 0, 0};
+        event_t vToMte2Ping = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE2));
+        event_t vToMte2Pong = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE2));
+        event_t mte2ToVPing = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        event_t mte2ToVPong = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        event_t vToMte3Ping = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
+        event_t vToMte3Pong = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
+        event_t mte3ToVPing = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
+        event_t mte3ToVPong = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
+        event_t mte3ToMte2Event = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
+        bool outputPingActive = false;
+        bool outputPongActive = false;
+
+        // Close the previous task's gate-vector use of the shared buffer, then keep
+        // each input slot unavailable to MTE2 until its preceding vector read ends.
+        SetFlag<HardEvent::V_MTE2>(vToMte2Ping);
+        SetFlag<HardEvent::V_MTE2>(vToMte2Pong);
+        WaitFlag<HardEvent::V_MTE2>(vToMte2Ping);
+        WaitFlag<HardEvent::V_MTE2>(vToMte2Pong);
+        DataCopyPad(inputPing, gGm[gmOffset], params, padParams);
+        SetFlag<HardEvent::MTE2_V>(mte2ToVPing);
+        if (count > 1) {
+            SetFlag<HardEvent::V_MTE2>(vToMte2Pong);
         }
-        PipeBarrier<PIPE_V>();
+        for (int64_t row = 0; row < count; ++row) {
+            const bool usePing = (row & 1) == 0;
+            LocalTensor<float> inputLocal = usePing ? inputPing : inputPong;
+            event_t currentMte2ToV = usePing ? mte2ToVPing : mte2ToVPong;
+            WaitFlag<HardEvent::MTE2_V>(currentMte2ToV);
+
+            if (row + 1 < count) {
+                const bool nextUsesPing = !usePing;
+                LocalTensor<float> nextInput = nextUsesPing ? inputPing : inputPong;
+                event_t nextVToMte2 = nextUsesPing ? vToMte2Ping : vToMte2Pong;
+                event_t nextMte2ToV = nextUsesPing ? mte2ToVPing : mte2ToVPong;
+                WaitFlag<HardEvent::V_MTE2>(nextVToMte2);
+                DataCopyPad(nextInput, gGm[gmOffset + row + 1], params, padParams);
+                SetFlag<HardEvent::MTE2_V>(nextMte2ToV);
+            }
+            if (row == 0) {
+                Adds(accLocal, inputLocal, 0.0f, 1);
+            } else {
+                Add(accLocal, accLocal, inputLocal, 1);
+            }
+            PipeBarrier<PIPE_V>();
+            LocalTensor<float> outputLocal = usePing ? outputPing : outputPong;
+            event_t currentMte3ToV = usePing ? mte3ToVPing : mte3ToVPong;
+            if ((usePing && outputPingActive) || (!usePing && outputPongActive)) {
+                WaitFlag<HardEvent::MTE3_V>(currentMte3ToV);
+            }
+            Copy(outputLocal, accLocal, 1, 1, {1, 1, 8, 8});
+            PipeBarrier<PIPE_V>();
+            if (row + 2 < count) {
+                event_t currentVToMte2 = usePing ? vToMte2Ping : vToMte2Pong;
+                SetFlag<HardEvent::V_MTE2>(currentVToMte2);
+            }
+            event_t currentVToMte3 = usePing ? vToMte3Ping : vToMte3Pong;
+            SetFlag<HardEvent::V_MTE3>(currentVToMte3);
+            WaitFlag<HardEvent::V_MTE3>(currentVToMte3);
+            DataCopyPad(gCumsumGm[gmOffset + row], outputLocal, params);
+            SetFlag<HardEvent::MTE3_V>(currentMte3ToV);
+            outputPingActive = outputPingActive || usePing;
+            outputPongActive = outputPongActive || !usePing;
+            if (row + 1 == count) {
+                SetFlag<HardEvent::MTE3_MTE2>(mte3ToMte2Event);
+            }
+        }
+        if (outputPingActive) {
+            WaitFlag<HardEvent::MTE3_V>(mte3ToVPing);
+        }
+        if (outputPongActive) {
+            WaitFlag<HardEvent::MTE3_V>(mte3ToVPong);
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(mte3ToMte2Event);
     }
 
     __aicore__ inline void ComputeGateBlock(int64_t rowBase,

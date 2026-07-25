@@ -41,6 +41,7 @@ BEGIN_TILING_DATA_DEF(ChunkKktSolveTriTilingData)
 END_TILING_DATA_DEF;
 
 REGISTER_TILING_DATA_CLASS(ChunkKktSolveTri, ChunkKktSolveTriTilingData)
+REGISTER_TILING_DATA_CLASS(ChunkCumsumKktSolveTri, ChunkKktSolveTriTilingData)
 }  // namespace optiling
 
 #endif
