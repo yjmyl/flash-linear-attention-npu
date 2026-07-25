@@ -4,6 +4,7 @@
 #include "kernel_operator.h"
 #include "kernel_tiling/kernel_tiling.h"
 #include "lib/matmul_intf.h"
+#include <type_traits>
 
 struct ChunkScaledDotKktTilingData;
 
@@ -20,7 +21,7 @@ constexpr MatmulConfig CHUNK_SCALED_DOT_KKT_MM_CFG = GetNormalConfig(true);
 using CType = matmul::MatmulType<TPosition::GM, CubeFormat::ND, float>;
 using BiasType = matmul::MatmulType<TPosition::GM, CubeFormat::ND, float>;
 
-template <typename KType>
+template <typename KType, typename OutputType = float>
 class ChunkScaledDotKkt {
 public:
     using AType = matmul::MatmulType<TPosition::GM, CubeFormat::ND, KType>;
@@ -50,6 +51,62 @@ public:
                                 uint64_t isVarlen,
                                 TPipe *pipe)
     {
+        InitCommon(k, g, beta, cuSeqlens, chunkIndices, a, scoreWorkspace, nullptr, false, b, hk, hv, hvPerHk,
+                   t, kDim, bt, nt, taskNum, usedAicNum, usedAivNum, btAlign, isVarlen, pipe);
+    }
+
+    __aicore__ inline void InitFusedCumsum(GM_ADDR k,
+                                           GM_ADDR rawG,
+                                           GM_ADDR beta,
+                                           GM_ADDR cuSeqlens,
+                                           GM_ADDR chunkIndices,
+                                           GM_ADDR gCumsum,
+                                           GM_ADDR a,
+                                           GM_ADDR scoreWorkspace,
+                                           uint64_t b,
+                                           uint64_t hk,
+                                           uint64_t hv,
+                                           uint64_t hvPerHk,
+                                           uint64_t t,
+                                           uint64_t kDim,
+                                           uint64_t bt,
+                                           uint64_t nt,
+                                           uint64_t taskNum,
+                                           uint64_t usedAicNum,
+                                           uint64_t usedAivNum,
+                                           uint64_t btAlign,
+                                           uint64_t isVarlen,
+                                           TPipe *pipe)
+    {
+        InitCommon(k, rawG, beta, cuSeqlens, chunkIndices, a, scoreWorkspace, gCumsum, true, b, hk, hv,
+                   hvPerHk, t, kDim, bt, nt, taskNum, usedAicNum, usedAivNum, btAlign, isVarlen, pipe);
+    }
+
+private:
+    __aicore__ inline void InitCommon(GM_ADDR k,
+                                      GM_ADDR g,
+                                      GM_ADDR beta,
+                                      GM_ADDR cuSeqlens,
+                                      GM_ADDR chunkIndices,
+                                      GM_ADDR a,
+                                      GM_ADDR scoreWorkspace,
+                                      GM_ADDR gCumsum,
+                                      bool fusedCumsum,
+                                      uint64_t b,
+                                      uint64_t hk,
+                                      uint64_t hv,
+                                      uint64_t hvPerHk,
+                                      uint64_t t,
+                                      uint64_t kDim,
+                                      uint64_t bt,
+                                      uint64_t nt,
+                                      uint64_t taskNum,
+                                      uint64_t usedAicNum,
+                                      uint64_t usedAivNum,
+                                      uint64_t btAlign,
+                                      uint64_t isVarlen,
+                                      TPipe *pipe)
+    {
         pipe_ = pipe;
         B_ = static_cast<int64_t>(b);
         Hk_ = static_cast<int64_t>(hk);
@@ -64,12 +121,16 @@ public:
         usedAivNum_ = static_cast<int64_t>(usedAivNum);
         btAlign_ = static_cast<int64_t>(btAlign);
         isVarlen_ = static_cast<int64_t>(isVarlen);
+        fusedCumsum_ = fusedCumsum;
 
         kGm.SetGlobalBuffer((__gm__ KType *)k, B_ * Hk_ * T_ * K_);
         gGm.SetGlobalBuffer((__gm__ float *)g, B_ * Hv_ * T_);
         betaGm.SetGlobalBuffer((__gm__ float *)beta, B_ * Hv_ * T_);
-        aGm.SetGlobalBuffer((__gm__ float *)a, B_ * Hk_ * T_ * BT_);
+        aGm.SetGlobalBuffer((__gm__ OutputType *)a, B_ * Hk_ * T_ * BT_);
         scoreGm.SetGlobalBuffer((__gm__ float *)scoreWorkspace, taskNum_ * BT_ * BT_);
+        if (fusedCumsum_) {
+            gCumsumGm.SetGlobalBuffer((__gm__ float *)gCumsum, B_ * Hv_ * T_);
+        }
         if (isVarlen_ != 0) {
             cuSeqlensGm.SetGlobalBuffer((__gm__ int64_t *)cuSeqlens);
             chunkIndicesGm.SetGlobalBuffer((__gm__ int64_t *)chunkIndices, NT_ * 2);
@@ -80,11 +141,15 @@ public:
             pipe_->InitBuffer(betaQueue_, BUFFER_NUM, btAlign_ * sizeof(float));
             pipe_->InitBuffer(scoreTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(float)));
             pipe_->InitBuffer(outTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(float)));
+            if constexpr (!std::is_same_v<OutputType, float>) {
+                pipe_->InitBuffer(typedOutTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(OutputType)));
+            }
             pipe_->InitBuffer(gateBuf_, BRCB_ROWS * btAlign_ * sizeof(float));
             pipe_->InitBuffer(rowBrcbBuf_, BRCB_ROWS * FP32_BLOCK_ELEMS * sizeof(float));
         }
     }
 
+public:
     __aicore__ inline void ProcessAiv()
     {
         const int64_t vecIdx = static_cast<int64_t>(GetBlockIdx());
@@ -171,6 +236,10 @@ private:
         CopyTaskVector(betaGm, ghOffset, betaQueue_, valid);
         LocalTensor<float> gLocal = gQueue_.template DeQue<float>();
         LocalTensor<float> betaLocal = betaQueue_.template DeQue<float>();
+        if (fusedCumsum_) {
+            ComputePrefixCumsum(gLocal, valid);
+            CopyTaskVectorOut(gCumsumGm, ghOffset, gLocal, valid);
+        }
 
         const int64_t scoreBaseOffset = task * BT_ * BT_;
         const int64_t outBaseOffset = ((b * Hk_ + h) * T_ + rowStart) * BT_;
@@ -239,18 +308,63 @@ private:
                                        LocalTensor<float> outTileLocal,
                                        int64_t valid)
     {
-        WaitVToMte3();
-        DataCopyExtParams outParams;
-        outParams.blockCount = static_cast<uint16_t>(valid);
-        outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
-        outParams.srcStride = static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) /
-                                                    UB_ALIGN_BYTES);
-        outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
-        outParams.rsv = 0;
-        DataCopyPad(aGm[outBaseOffset], outTileLocal, outParams);
-        WaitMte3ToV();
+        if constexpr (!std::is_same_v<OutputType, float>) {
+            LocalTensor<OutputType> typedOut = typedOutTileBuf_.Get<OutputType>();
+            Cast(typedOut, outTileLocal, RoundMode::CAST_RINT,
+                 static_cast<uint32_t>(valid * btAlign_));
+            PipeBarrier<PIPE_V>();
+            CopyTypedOutTile(outBaseOffset, outRowStride, typedOut, valid);
+        } else {
+            WaitVToMte3();
+            DataCopyExtParams outParams;
+            outParams.blockCount = static_cast<uint16_t>(valid);
+            outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
+            outParams.srcStride = static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) /
+                                                        UB_ALIGN_BYTES);
+            outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
+            outParams.rsv = 0;
+            DataCopyPad(aGm[outBaseOffset], outTileLocal, outParams);
+            WaitMte3ToV();
+        }
     }
 
+public:
+    __aicore__ inline void ProcessScoreForSolve(int64_t tilesPerAic)
+    {
+        const int64_t aicIdx = static_cast<int64_t>(GetBlockIdx());
+        const int64_t begin = aicIdx * tilesPerAic;
+        const int64_t end = MinI64(begin + tilesPerAic, taskNum_);
+        for (int64_t task = begin; task < end; ++task) {
+            ComputeScoreTask(task);
+        }
+    }
+
+    __aicore__ inline void ProcessAivForSolve(int64_t tilesPerAic)
+    {
+        const int64_t subBlockNum = static_cast<int64_t>(GetSubBlockNum());
+        const int64_t subBlockIdx = static_cast<int64_t>(GetSubBlockIdx());
+        const int64_t aicIdx = static_cast<int64_t>(GetBlockIdx()) / subBlockNum;
+        const int64_t begin = aicIdx * tilesPerAic;
+        const int64_t end = MinI64(begin + tilesPerAic, taskNum_);
+        for (int64_t task = begin + subBlockIdx; task < end; task += subBlockNum) {
+            ComputeScoreTask(task);
+            ComputeEpilogueTask(task);
+        }
+    }
+
+    __aicore__ inline void ProcessEpilogueForSolve(int64_t tilesPerAic)
+    {
+        const int64_t subBlockNum = static_cast<int64_t>(GetSubBlockNum());
+        const int64_t subBlockIdx = static_cast<int64_t>(GetSubBlockIdx());
+        const int64_t aicIdx = static_cast<int64_t>(GetBlockIdx()) / subBlockNum;
+        const int64_t begin = aicIdx * tilesPerAic;
+        const int64_t end = MinI64(begin + tilesPerAic, taskNum_);
+        for (int64_t task = begin + subBlockIdx; task < end; task += subBlockNum) {
+            ComputeEpilogueTask(task);
+        }
+    }
+
+private:
     __aicore__ inline void CopyTaskVector(const GlobalTensor<float> &srcGm, int64_t gmOffset,
                                           TQue<QuePosition::VECIN, BUFFER_NUM> &queue, int64_t count)
     {
@@ -262,6 +376,48 @@ private:
         params.dstStride = 0;
         DataCopyPad(local, srcGm[gmOffset], params, {false, 0, 0, 0});
         queue.EnQue(local);
+    }
+
+    __aicore__ inline void CopyTaskVectorOut(GlobalTensor<float> &dstGm, int64_t gmOffset,
+                                             LocalTensor<float> local, int64_t count)
+    {
+        WaitVToMte3();
+        DataCopyParams params;
+        params.blockCount = 1;
+        params.blockLen = static_cast<uint16_t>(count * static_cast<int64_t>(sizeof(float)));
+        params.srcStride = 0;
+        params.dstStride = 0;
+        DataCopyPad(dstGm[gmOffset], local, params);
+        WaitMte3ToV();
+    }
+
+    __aicore__ inline void CopyTypedOutTile(int64_t outBaseOffset,
+                                            int64_t outRowStride,
+                                            LocalTensor<OutputType> outTileLocal,
+                                            int64_t valid)
+    {
+        WaitVToMte3();
+        DataCopyExtParams outParams;
+        outParams.blockCount = static_cast<uint16_t>(valid);
+        outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(OutputType)));
+        outParams.srcStride = static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(OutputType)) /
+                                                    UB_ALIGN_BYTES);
+        outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(OutputType)));
+        outParams.rsv = 0;
+        DataCopyPad(aGm[outBaseOffset], outTileLocal, outParams);
+        WaitMte3ToV();
+    }
+
+    __aicore__ inline void ComputePrefixCumsum(const LocalTensor<float> &gLocal, int64_t count)
+    {
+        // A single head is stored as a contiguous vector, so token offsets after the
+        // first one are not all 32-byte aligned. Use scalar UB arithmetic here; the
+        // following KKT epilogue still uses aligned vector operations.
+        __ubuf__ float *values = (__ubuf__ float *)gLocal.GetPhyAddr();
+        for (int64_t row = 1; row < count; ++row) {
+            values[row] += values[row - 1];
+        }
+        PipeBarrier<PIPE_V>();
     }
 
     __aicore__ inline void ComputeGateBlock(int64_t rowBase,
@@ -339,14 +495,16 @@ private:
     TQue<QuePosition::VECIN, BUFFER_NUM> betaQueue_;
     TBuf<TPosition::VECCALC> scoreTileBuf_;
     TBuf<TPosition::VECCALC> outTileBuf_;
+    TBuf<TPosition::VECCALC> typedOutTileBuf_;
     TBuf<TPosition::VECCALC> gateBuf_;
     TBuf<TPosition::VECCALC> rowBrcbBuf_;
 
     GlobalTensor<KType> kGm;
     GlobalTensor<float> gGm;
     GlobalTensor<float> betaGm;
-    GlobalTensor<float> aGm;
+    GlobalTensor<OutputType> aGm;
     GlobalTensor<float> scoreGm;
+    GlobalTensor<float> gCumsumGm;
     GlobalTensor<int64_t> cuSeqlensGm;
     GlobalTensor<int64_t> chunkIndicesGm;
 
@@ -363,6 +521,7 @@ private:
     int64_t usedAivNum_ = 0;
     int64_t btAlign_ = 0;
     int64_t isVarlen_ = 0;
+    bool fusedCumsum_ = false;
 };
 }  // namespace NsChunkScaledDotKkt
 
