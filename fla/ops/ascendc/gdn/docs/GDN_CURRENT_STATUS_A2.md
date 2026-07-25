@@ -669,10 +669,27 @@ Phase 2 性能收口至此完成并已远端归档。commit `2b8161d` 包含 7 �
 
 ## 6. 下一小步
 
-只做 Phase 3 远端 branch 归档：先只读确认 `chw/gdn-a2-phase-archive` 仍为 `2b8161d...`、远端
-`gdn-a2-phase3` 不存在、Phase 2 tag object/peeled commit 未移动，且远端 branch 是本地 HEAD 的
-祖先；随后仅显式 fast-forward push `gdn-a2-phase-archive`，不推任何 tag。推送后只读回查 branch
-并刷新本文件；本小步不推 tag、不构建或运行 NPU。
+只做 Phase 3 tag 远端归档：先只读确认 `chw/gdn-a2-phase-archive` 仍为
+`1595456dabbae42e70912c4b8981bbbdaace3279`、远端 `gdn-a2-phase3` 仍不存在、Phase 2 tag
+object/peeled commit 未移动；随后只显式推送本地 annotated tag `gdn-a2-phase3`，不推 branch 或
+其他 tag。推送后只读回查 tag object=`b26159171f8aa0b1340f3f927412795853dc72e9`、peeled
+commit=`7fb8f05b59ab56a8392e0f6c9bef071714894826` 和 branch 未移动，再刷新本文件；本小步不构建或
+运行 NPU。
+
+### Phase 3 远端 branch 归档（已完成）
+
+远端写入前重新完成竞态门禁：branch 仍为 `2b8161d27be4fcb53f3cb51d448857b84858c4a9`，
+`gdn-a2-phase3` 不存在，`gdn-a2-phase2^{}` 仍为
+`f2a4b467f37887824106633524bd0b1c45737e1c`，且旧 branch 是本地
+`1595456dabbae42e70912c4b8981bbbdaace3279` 的祖先。随后只执行显式 branch refspec 的普通
+fast-forward push，将 `chw/gdn-a2-phase-archive` 从 `2b8161d...` 更新到 `1595456...`；未使用
+force、`--tags` 或 `--follow-tags`。
+
+推送后 `git ls-remote` 只读回查确认 branch 精确为 `1595456...`，Phase 2 tag 未移动且远端
+Phase 3 tag 仍不存在；本地 remote-tracking branch 也已显式刷新到相同 SHA。本小步未推 tag、
+未构建、安装或运行 NPU。本机/A2 直连 GitHub 曾短暂超时，A5 也无 GitHub 出口；所有失败均在
+只读检查阶段，远端无写入。最终成功操作使用恢复后的本机 HTTPS 和既有 Git credential helper，
+没有读取或输出凭据；临时 SSH 隧道均已关闭。
 
 ### Phase 3 tag 元数据 commit（已完成）
 
@@ -687,6 +704,12 @@ files:   GDN_CURRENT_STATUS_A2.md, GDN_PHASE_VERSION_ARCHIVE_A2.md
 
 没有 amend、push、构建或运行 NPU。本地 tag 仍指向不可变实现 commit `7fb8f05...`。下一层只推
 归档 branch，不使用 `--tags`/`--follow-tags`，Phase 3 tag 留到 branch 验证后的独立小步。
+
+首次 Phase 3 远端 branch 只读预检在第一条 `git ls-remote` 即因本机到 `github.com:443` 连接超时
+退出，未进入 push，远端 branch/tag 没有变化。后续检查因 PowerShell 不自动将 native Git 非零码
+转为 terminating error 而没有形成有效结论。重试沿用 Phase 2 已验证方法：只在本机监听临时 SOCKS
+隧道经 A2 出网，以 Git 单命令 proxy 配置重新完成全部只读竞态检查；每条 native 命令显式核对
+`$LASTEXITCODE`，通过前禁止 push。
 
 ### Phase 3 本地不可变 tag（已完成）
 
