@@ -1,6 +1,7 @@
 # A2 GDN 全融合计划归档
 
-本文档是 A2 平台 GDN 全融合工作的主计划。后续实现、消融和性能结论都以本文档为准；如果方案发生变化，先更新本文档，再修改代码。
+本文档是 A2 平台 GDN 全融合的稳定路线和冻结 Phase 边界归档。当前进度只见
+`GDN_CURRENT_STATUS_A2.md`，最终数据只见对应 Phase 验收报告；只有路线或边界变化时才更新本文档。
 
 ## 1. 最终目标
 
@@ -130,9 +131,11 @@ local_cumsum -> KKT -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o
 - 尾块和无效 padding 区域
 - KKT 输入的数值顺序是否改变
 
-当前工作区中的 `ChunkCumsumKkt` 属于这个方向的探索性实现，不改变 Phase 2 的正式优先级。
+Phase 3 早期以独立 `ChunkCumsumKkt` 验证这个方向，但最终 core 路由按下文修正卡收敛为累积融合。
 
 #### Phase 3 启动卡（2026-07-25 冻结）
+
+> 以下是 Phase 3 启动时的历史冻结卡，不代表当前仍处于 Phase 3 启动阶段。
 
 | 项目 | 冻结内容 |
 | --- | --- |
@@ -327,7 +330,10 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - RMSNorm 不在当前六个 GDN core 小算子列表中，但属于最终完整 Demo 融合目标。
 - backward 暂不作为首轮融合目标；先稳定 forward，保持现有 backward 链路。
 
-## 7. 当前归档状态
+## 7. 冻结里程碑摘要（非当前进度源）
+
+本节只保留路线与冻结 Phase 的对应关系。当前 Phase、下一小步和 blocker 统一由
+`GDN_CURRENT_STATUS_A2.md` 维护。
 
 截至 2026-07-24，Phase 1 已通过 A2 验收：
 
@@ -353,7 +359,7 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 - 最终累积边界为单 `ChunkCumsumKktSolveTri`：raw FP32 cumsum + KKT + low-precision hand-off + solve_tri；
 - 独立 `ChunkCumsumKkt` 的最终共享 helper 完成 `80/80 exact`，core dense/varlen `8/8` 加 state
   `1/1` 均对不可变 Phase 2 bit-exact/有限；
-- 独立局部和完整 core 的生产性能矩阵均 `8/8` median 改善；
+- 共享 helper 局部微基准 `8/8` median 改善；作为最终结论的完整 GDN core Phase 2/3 生产性能也是 `8/8` median 改善；
 - profiler 证明完整 core NPU kernel 数 `9 -> 8`，目标段由两个 kernel 合并为一个；
 - 完整 run 包 SHA256 为 `837742c6731143ec0ea55c517338e0daca3d3f295b9b7a71f079805b9b62bfdb`，
   安装 host 库 SHA256 为 `645336f9f65c522a06d74cf8b3df0ca6db2ae493fcd6fec980719eca7c8af07f`；

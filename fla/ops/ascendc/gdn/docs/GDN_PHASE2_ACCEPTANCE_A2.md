@@ -1,5 +1,7 @@
 # A2 GDN Phase 2 验收报告
 
+> 文档定位：Phase 2 关闭时的冻结验收快照，不承载当前进度。当前状态只见 `GDN_CURRENT_STATUS_A2.md`。
+
 ## 1. 结论
 
 Phase 2 `chunk_scaled_dot_kkt + solve_tri` 于 2026-07-25 在 A2（Ascend 910B）按冻结范围完成工程收口：实现、功能/精度、版本化入口、kernel 数、生产性能和 workspace/peak 证据均已归档。生产性能关闭 `ASCEND_LAUNCH_BLOCKING`；dense 四个 dtype/chunk 交叉点、varlen 四个交叉点和 `B=4,H=4,T=4096` 扩展点的主判据 median 均无可复现回退，varlen standalone 的 Phase 2 输出/state 均通过独立有限性检查。
@@ -230,7 +232,7 @@ FP16 C128 在 device 2 的 P90 小幅回退未在 device 1 独立复制中复现
 | kernel 数 | 局部 `3 -> 1`，Python core `12 -> 10`，证据已归档 |
 | 显存 | 可比较生产 case 的最大相对增量为 `8.86 MB` workspace / `8.39 MB` peak；绝对单 ACLNN workspace 不满足 `50 MB` 口径 |
 
-因此 Phase 2 按冻结的 `K==V==128`、外部扩头 GVA、现有 transpose/layout 边界完成工程收口，可以进入 Phase 3 启动卡。不能由此宣称原生 GVA、`V=256`、完整 Demo 或绝对 workspace `<=50 MB` 已完成。
+因此 Phase 2 按冻结的 `K==V==128`、外部扩头 GVA、现有 transpose/layout 边界完成工程收口，并在当时具备进入 Phase 3 启动卡的条件。不能由此宣称原生 GVA、`V=256`、完整 Demo 或绝对 workspace `<=50 MB` 已完成。
 
 ## 5. 范围边界
 
@@ -239,6 +241,11 @@ FP16 C128 在 device 2 的 P90 小幅回退未在 device 1 独立复制中复现
 - transpose/layout 位置未在 Phase 2 同时修改。
 - 当前私有 KKT hand-off workspace 是正确性所需，后续只能通过全局阶段 barrier 或 tile-local 流水设计去除。
 
-## 6. 下一步
+## 6. 当时后续建议（已执行完成）
 
-Phase 2 已按冻结范围收口。下一步按开发手册先填写 Phase 3 启动卡，独立验证现有探索性 `ChunkCumsumKkt`，首版只做 `local_cumsum + KKT` 局部 A/B；在启动卡、最小 smoke 和独立精度矩阵通过前，不接入 `solve_tri`，不修改 transpose、原生 GVA、`V=256` 或 workspace 复用策略。
+Phase 2 收口时的后续建议是：先填写 Phase 3 启动卡，独立验证探索性
+`ChunkCumsumKkt`，首版只做 `local_cumsum + KKT` 局部 A/B；在启动卡、最小 smoke 和独立精度矩阵通过前，
+不接入 `solve_tri`，不修改 transpose、原生 GVA、`V=256` 或 workspace 复用策略。
+
+该建议后续已执行完成，并经过拆分候选的性能淘汰，最终收敛为 Phase 3 累积融合
+`ChunkCumsumKktSolveTri`。该节仅保留 Phase 2 快照的历史因果，不是当前“下一步”。

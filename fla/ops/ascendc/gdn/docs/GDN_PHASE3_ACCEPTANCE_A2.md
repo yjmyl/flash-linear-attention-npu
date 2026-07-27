@@ -1,5 +1,7 @@
 # A2 GDN Phase 3 验收报告
 
+> 文档定位：Phase 3 关闭时的冻结验收快照，不承载当前进度。当前状态只见 `GDN_CURRENT_STATUS_A2.md`。
+
 ## 1. 结论
 
 Phase 3 于 2026-07-26 在 A2（Ascend 910B3）按冻结范围完成工程验收。最终版本不是早期的
@@ -18,7 +20,7 @@ raw FP32 g
 `ChunkLocalCumsum -> ChunkKktSolveTri`；Phase 1、Phase 2 和默认入口没有被 Phase 3 原地覆盖。
 
 最终包通过独立融合算子 `80/80` exact、GDN core dense/varlen `8/8` 加 state `1/1` 精度门禁、
-独立局部生产性能 `8/8`、core 生产性能 `8/8`、workspace/peak 和 profiler/kernel 数门禁。
+共享 helper 局部微基准 `8/8`、完整 GDN core 生产性能 `8/8`、workspace/peak 和 profiler/kernel 数门禁。
 Phase 3 在已验收矩阵上的主判据 median 均不劣于 Phase 2，完整 core NPU kernel 数 `9 -> 8`。
 
 本次收口仍只代表冻结的 `K==V==128`、head-first ND、外部 GVA 扩头和现有 transpose/layout
@@ -51,8 +53,8 @@ Phase 3 在已验收矩阵上的主判据 median 均不劣于 Phase 2，完整 c
 
 - Phase 2 不可变代码基线：`gdn-a2-phase2^{commit}`（`f2a4b46`）；
 - Phase 2 性能证据基线：commit `2b8161d`；
-- Phase 3 不可变 Git 里程碑：`gdn-a2-phase3^{commit}`；精确 SHA 在里程碑创建后登记到
-  `GDN_PHASE_VERSION_ARCHIVE_A2.md`，不通过 amend 自引用；
+- Phase 3 不可变 Git 里程碑：`gdn-a2-phase3^{commit}` =
+  `7fb8f05b59ab56a8392e0f6c9bef071714894826`；完整 tag 身份见 `GDN_PHASE_VERSION_ARCHIVE_A2.md`；
 - 硬件：A2，Ascend 910B3；正式验证使用 device 1；
 - CANN：`9.1.0.beta1`；conda 环境：`chw-py11`；
 - 最终完整 run 包：`build_out/fla-npu-fla_npu_linux-aarch64.run`；
@@ -119,15 +121,19 @@ dense/varlen × FP16/BF16 × C64/C128
 
 - 正式性能关闭 `ASCEND_LAUNCH_BLOCKING`；
 - 使用 NPU Event，warmup `10`、每个 variant 每进程采样 `50`；
-- 独立局部路径在同进程逐轮 AB/BA 交替；
+- 共享 helper 局部微基准在同进程逐轮 AB/BA 交替；
 - core 使用 4 轮 AB/BA、8 个干净子进程，每 Phase 聚合 `200` 个样本；
 - 同一 case 使用同一输入、同一安装包和同一 device；
 - 主判据为 median，同时记录 P90、min、workspace max/sum 与 peak allocated delta。
 
-### 5.2 最终独立局部性能
+### 5.2 共享 helper 局部微基准（辅助证据）
 
 基线为 `ChunkLocalCumsum -> ChunkScaledDotKkt` 两个 ACLNN，融合为一个
 `ChunkCumsumKkt` ACLNN。公开输出在计时前通过 bit-exact/有限性检查，对外 ACLNN 数 `2 -> 1`。
+
+这是 `local_cumsum + KKT`（A+B）共享实现的独立证据，用于证明该 helper 在接入累积融合前
+既正确又有局部收益。它不包含 `solve_tri`，不是 Phase 3 最终路由，也不代替 5.3 的
+完整 GDN core 生产性能结论。
 
 | case | baseline median | fused median | median 变化 | baseline P90 | fused P90 | P90 变化 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -144,11 +150,27 @@ dense/varlen × FP16/BF16 × C64/C128
 allocated delta 每例减少 `16,778,240 B`。最大 fused workspace max 为 `22,544,896 B`，最大
 fused peak delta 为 `27,300,864 B`，均低于局部相对额外 `50 MB` 门槛。
 
-原始证据位于 A2 `/opt/chw/gdn-phase3-staging-local-perf-r2`。八份 JSON 的 SHA256 已逐项记录在
-`GDN_CURRENT_STATUS_A2.md`；本地只读审计为 8 case、0 failure，摘要 SHA256
+原始证据位于 A2 `/opt/chw/gdn-phase3-staging-local-perf-r2`。八份 JSON 的 SHA256 为：
+
+```text
+D_BF16_C128  3c8a0efba9f1b2ee91e69c175081e4bcd32b009268c3923c7ada28d29337a34f
+D_BF16_C64   4a51baec04675888ef2981c4dd119c8e4ad1c34d97661168381668b3c1c14adf
+D_FP16_C128  70f90dc73d82643891542941834f33e2bddf1bf6b0ad6779d65936eddfb06207
+D_FP16_C64   ac2058169fd621bef86a0cc5c6930187f16bcfb4a27b4cc80bcae7255e15e991
+V_BF16_C128  2c0a0004580e564f6d555d7ed88a37eac20bb75dc34f09e2d75b7e14c0462b60
+V_BF16_C64   30d4a46677a403c84c7255c97be717bb4c3fbd2ce0dc4b5d3a1ad3bf7cac3dd3
+V_FP16_C128  65704f6b6e7071ad267a43d07f00fa3b24e93f39155fd26eda9a96266a5aa9af
+V_FP16_C64   45b13dfc2232ab797e9d78cc92ba231487322f895cd59ecff308f72bd33b93ba
+```
+
+本地只读审计为 8 case、0 failure，摘要 SHA256
 `a7665e632e6207db0bfd7b1a743b890cc7fc11b83291c46ef0e55b2b7a086a33`。
 
-### 5.3 最终 core 生产性能
+### 5.3 完整 GDN core 生产性能（Phase 2 vs Phase 3）
+
+这是 Phase 3 的最终性能结论：在同一安装包中比较版本化 `aclnnGdnCoreFwdPhase2`
+和 `aclnnGdnCoreFwdPhase3`，覆盖原六个 GDN core 逻辑阶段组成的完整 forward core 链路。
+该口径不包含 causal conv、RMSNorm/gate 或完整 Demo/模型。
 
 | case | Phase 2 median | Phase 3 median | median 变化 | P90 变化 |
 | --- | ---: | ---: | ---: | ---: |
@@ -212,7 +234,7 @@ Phase 3 已完成的范围：
 - 外部将 q/k 扩展到 value head 数的 GVA contract；
 - 现有 head-first ND 和 transpose/layout；
 - forward GDN core，含非空 initial state 与真实 final state；
-- 独立局部和完整 core 的精度、生产性能、workspace/peak 与 profiler。
+- 共享 helper 的独立精度/局部微基准，以及完整 core 的精度、生产性能、workspace/peak 与 profiler。
 
 未完成且不得由本报告外推的范围：
 

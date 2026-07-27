@@ -18,12 +18,16 @@ chunk_local_cumsum -> chunk_scaled_dot_kkt -> solve_tri ->
 recompute_w_u -> chunk_gated_delta_rule_fwd_h -> chunk_fwd_o
 ```
 
-Phase 2 replaces KKT and solve_tri with `ChunkKktSolveTri`. Both fixed entries
+Phase 2 replaces KKT and solve_tri with `ChunkKktSolveTri`.
 Phase 3 additionally absorbs the raw-g local cumsum into
 `ChunkCumsumKktSolveTri`, while preserving the public FP32 `gCumsumOut` and the
 same solved-A contract. All fixed entries share the same public tensor contract
 and are exported by the same package so they can be compared without
 reinstalling a different wheel.
+
+The Phase 2 versus Phase 3 production benchmark measures this complete six-stage
+GDN forward core path. It is not a full Demo/model benchmark and does not include
+causal convolution, RMSNorm, or the output gate.
 
 ## Interface
 

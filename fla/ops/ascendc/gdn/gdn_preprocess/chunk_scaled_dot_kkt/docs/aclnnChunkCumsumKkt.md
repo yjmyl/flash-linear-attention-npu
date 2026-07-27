@@ -5,7 +5,9 @@
 `aclnnChunkCumsumKkt` 是 A2 GDN Phase 3 的独立局部融合入口。它在每个序列、每个 chunk 内对
 raw FP32 gate 做 forward cumulative sum，并直接用该结果计算未求解的严格下三角 KKT 矩阵。
 
-该入口不包含 `solve_tri`，不修改 Phase 1/2 GDN core，也不实现原生 GVA。
+该入口不包含 `solve_tri`，不修改 Phase 1/2 GDN core，也不实现原生 GVA。它保留为共享 helper
+的独立正确性/局部微基准入口；Phase 3 最终 core 不调用它，而调用累积融合
+`ChunkCumsumKktSolveTri`。
 
 ## 接口
 

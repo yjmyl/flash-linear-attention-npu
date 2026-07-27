@@ -1,6 +1,6 @@
 # A2 GDN 融合开发手册
 
-本文档沉淀 Phase 2 `KKT + solve_tri` 的开发经验。后续每个 Phase 开始前必须先阅读本文档，并按本文档执行；如需偏离，先在主计划中记录理由。
+本文档沉淀 Phase 2/3 的小步开发和验收方法，不承载当前进度。后续每个 Phase 开始前必须先阅读本文档，并按本文档执行；如需偏离，先在主计划中记录理由。
 
 进行中的 A2 工作统一从 `GDN_CURRENT_STATUS_A2.md` 续跑。为降低上下文压缩、任务切换或中断造成的状态回退，任何小步开始前必须先读取该文件；完成、失败或中断后必须立即刷新证据、结论和唯一的“下一小步”，再继续工作。聊天记录不能替代该状态文件。
 
@@ -129,7 +129,7 @@ dense 通过不能证明无竞态，必须用 varlen、尾块和多 core 并行�
 - 优先输出结构化摘要，不将整份编译日志反复载入上下文。
 - 发现新规则时更新本手册；单次错误细节记录在 `.learnings/ERRORS.md`，不让错误日志取代可执行流程。
 
-## 9. Phase 3 启动清单
+## 9. Phase 3 历史启动清单（已执行完成）
 
 Phase 3 吸收 `local_cumsum` 时固定以下边界：
 
@@ -139,3 +139,6 @@ Phase 3 吸收 `local_cumsum` 时固定以下边界：
 - 先做 `local_cumsum + KKT` 局部 A/B，通过后再与 Phase 2 串联。
 - 不同时修改 transpose、原生 GVA、`K != V` 或 causal conv/RMSNorm。
 - 如果没有性能收益，保留 Phase 2 路径，不为了减少算子数强行融合。
+
+该清单后续已执行完成。早期 `(local_cumsum + KKT) + solve_tri` 拆分 core 候选因丢失
+Phase 2 的 `KKT + solve_tri` 融合收益被淘汰，最终 Phase 3 为累积 `ChunkCumsumKktSolveTri`。

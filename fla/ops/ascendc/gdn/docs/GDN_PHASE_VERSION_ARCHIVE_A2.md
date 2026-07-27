@@ -1,6 +1,7 @@
 # A2 GDN Phase 版本归档
 
-本文档记录可直接构建和 A/B 的 GDN core Phase 快照。主原则是：一个 Phase 一个版本化 ACLNN，新 Phase 不覆盖旧 Phase。
+本文档只记录可直接构建和 A/B 的 GDN core Phase 身份、commit/tag 与归档规则，
+不承载当前进度。主原则是：一个 Phase 一个版本化 ACLNN，新 Phase 不覆盖旧 Phase。
 
 ## Git 归档规则
 
@@ -92,7 +93,7 @@ Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径�
 - 完整 run 包 SHA256：`837742c6731143ec0ea55c517338e0daca3d3f295b9b7a71f079805b9b62bfdb`；
 - 安装 host 库 SHA256：`645336f9f65c522a06d74cf8b3df0ca6db2ae493fcd6fec980719eca7c8af07f`；
 - 独立 `ChunkCumsumKkt` 最终共享 helper `80/80 exact`，core dense/varlen `8/8` 加 state `1/1` bit-exact/有限；
-- 独立局部和完整 core 生产性能矩阵均 `8/8` median 改善；core workspace/peak 对 Phase 2 持平；
+- 共享 helper 局部微基准 `8/8` median 改善；作为最终结论的完整 GDN core Phase 2/3 生产性能也是 `8/8` median 改善，core workspace/peak 对 Phase 2 持平；
 - profiler 证明完整 core NPU kernel 数 `9 -> 8`，目标段由两个 kernel 合并为一个；
 - 详细证据与范围边界见 `GDN_PHASE3_ACCEPTANCE_A2.md`。
 

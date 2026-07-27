@@ -4,6 +4,10 @@ Every fusion step must compare against the same six-operator AscendC baseline:
 
 `local_cumsum -> KKT -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o`
 
+This is the complete GDN forward **core** scope used for formal Phase-to-Phase
+production comparisons. It is not the full Demo/model path: causal convolution,
+RMSNorm, and the output gate are outside this benchmark.
+
 The benchmark records bit-exact output checks, host-side ACLNN call count, NPU
 event latency, peak allocated NPU memory, per-ACLNN workspace sizes, and optional
 device kernel count from a profiler trace.
