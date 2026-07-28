@@ -122,5 +122,6 @@ Phase 4 实现与验收里程碑 commit 为 `9719f2701f62ec7ef3d67751af52d1a1ea3
 `f336dbdb7d13ba30a7c41ccc046c4bfe428858cf`。本地 annotated tag `gdn-a2-phase4` object 为
 `dd79407814abfea81e964e207c721fe4e0c9c360`，peeled commit 为上述里程碑。归档只允许快进追加
 新 commit/tag，不得移动 `gdn-a2-phase2` / `gdn-a2-phase3` / `gdn-a2-phase4`。
-远端回查确认 `refs/heads/gdn-a2-phase-archive` 和 `refs/tags/gdn-a2-phase4^{}` 均为
-`9719f2701f62ec7ef3d67751af52d1a1ea3c9435`，Phase 2/3 tag 也保持原 SHA；推送未使用 force。
+远端回查确认 `refs/tags/gdn-a2-phase4^{}` 为
+`9719f2701f62ec7ef3d67751af52d1a1ea3c9435`，归档分支包含该里程碑并只向前追加归档元数据；
+Phase 2/3 tag 也保持原 SHA，推送未使用 force。
