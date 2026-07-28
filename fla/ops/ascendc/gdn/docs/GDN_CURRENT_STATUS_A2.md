@@ -9,11 +9,11 @@
 - **Phase 1：已归档。** 保留六个 GDN core 逻辑阶段的版本化对照入口。旧路径已知的非有限值和长序列问题按历史边界记录，不扩成当前融合路径的修复任务。
 - **Phase 2：已验收并归档。** 融合 `KKT + solve_tri`，保留独立 `local_cumsum`。
 - **Phase 3：已验收并归档。** 在 Phase 2 基础上继续吸收 `local_cumsum`，最终为单个累积融合 `ChunkCumsumKktSolveTri`。
-- **Phase 4：冻结矩阵已通过，待验收归档。** 边界为 `fwd_h + fwd_o`，目标 core 路径是
+- **Phase 4：已验收并归档。** 边界为 `fwd_h + fwd_o`，目标 core 路径是
   `(A+B+C) + D + (E+F)`。单个 MIX kernel、版本化 Phase 4 core 入口、A2 整包构建、
   dense `4/4` + varlen `4/4` + state `1/1` 精度均已通过；dense/varlen 共 `8/8` 性能点
-  当前均无可复现的实质回退，workspace 全部下降。下一步只做验收快照、版本身份和文档收口，
-  不再扩测试变量或修改 kernel。
+  均无可复现的实质回退，workspace 全部下降。Git 里程碑为
+  `9719f2701f62ec7ef3d67751af52d1a1ea3c9435`，tag 为 `gdn-a2-phase4`。
 
 当前没有未收口的 Phase 2/3 实现或验收项。新工作不应继续改写 Phase 3，而应从不可变 `gdn-a2-phase3` 里程碑追加 Phase 4 的新 commit 和新版本化入口。
 
@@ -86,7 +86,7 @@ Phase 4: (A+B+C) + D + (E+F)
 
 后续默认只推进一条生产路线，不按 dtype、chunk、layout 或 shape 预设运行时分支。每个 Phase 的版本化 ACLNN 仅用于不可变 A/B 和归档，不代表生产入口需要同时维护多条规格路由。若冻结用例出现超出测量噪声的性能回退，或融合后没有获得预期收益，先在同一路线上最多做三轮有明确假设的单变量优化；三轮后仍无解，再携带基线差距、profiler 瓶颈、已尝试方案和预计工作量反馈决策，不自动新增分支。
 
-## 5. Phase 4 验收收口与下一小步
+## 5. Phase 4 快照与下一小步
 
 Phase 4 启动卡已冻结：
 
@@ -149,11 +149,10 @@ Phase 4 启动卡已冻结：
   workspace 为 `130229760 -> 94570496 B`（`-27.38%`）和
   `143843840 -> 103729664 B`（两个 C128 点均为 `-27.89%`）。
 
-冻结功能/精度、dense/varlen `8/8` 性能、workspace/peak 和 profiler 证据现已齐全。
-当前唯一下一小步：写 Phase 4 验收快照，登记最终 run 包/host 库与 Git 里程碑身份，刷新版本归档和
-当前状态文档。该步只收口现有证据，不修改 kernel，也不提前进入 `V=256` 规格闸门。
-
-后续仍执行“一小步、一层证据”，不直接铺开大矩阵。单纯复测、扩大迭代数或确认噪声不计入三轮优化。
+冻结功能/精度、dense/varlen `8/8` 性能、workspace/peak、profiler 和 Git 身份均已收口。
+当前唯一下一小步：为第一个 Phase 4 后置规格闸门 `K=128,V=256` 写启动卡，先做静态
+tiling/workspace/调度容量分析，不直接改 kernel，不同时引入原生 GVA。仍执行“一小步、
+一层证据”；该规格闸门如需改变已归档 Phase 4 的行为，必须新增版本化 checkpoint。
 
 ## 6. 文档职责和更新规则
 

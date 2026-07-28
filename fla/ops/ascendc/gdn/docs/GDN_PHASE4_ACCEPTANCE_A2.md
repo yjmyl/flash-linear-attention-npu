@@ -1,7 +1,7 @@
 # A2 GDN Phase 4 验收快照
 
 > 验收日期：2026-07-28
-> 状态：冻结范围验收通过，待 Git 里程碑和 tag 登记
+> 状态：冻结范围验收通过，Git 里程碑和 tag 已归档
 
 ## 1. 结论
 
@@ -27,8 +27,8 @@ AB/BA、长尾和 profiler 联合证据判为测量噪声范围，不启动无�
 
 - 不可变基线：`gdn-a2-phase3^{commit}` =
   `7fb8f05b59ab56a8392e0f6c9bef071714894826`；
-- Phase 4 Git 身份：以 `gdn-a2-phase4^{commit}` 为准，精确 SHA 在
-  `GDN_PHASE_VERSION_ARCHIVE_A2.md` 登记；
+- Phase 4 Git 里程碑：`gdn-a2-phase4^{commit}` =
+  `9719f2701f62ec7ef3d67751af52d1a1ea3c9435`；
 - 硬件：A2，Ascend 910B3，验收使用 device 1；
 - CANN：`9.1.0.beta1`；conda：`chw-py11`；
 - 干净构建日志：`/opt/chw/gdn-phase4-pilot1-build-r2.log`，返回码 `0`；

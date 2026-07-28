@@ -21,7 +21,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 1 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 历史恢复点；版本化 ACLNN 已与 Phase 2 并存 |
 | Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能证据由后续 commit `2b8161d` 追加，不移动该 tag |
 | Phase 3 | `gdn-a2-phase-archive` | `gdn-a2-phase3^{commit}` = `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 不可变 annotated tag 已远端推送并逐 SHA 回查 |
-| Phase 4 | `gdn-a2-phase-archive` | `gdn-a2-phase4^{commit}` | 冻结验收通过，精确 commit/tag 身份待归档后回填 |
+| Phase 4 | `gdn-a2-phase-archive` | `gdn-a2-phase4^{commit}` = `9719f2701f62ec7ef3d67751af52d1a1ea3c9435` | 不可变 annotated tag 已推送并完成远端逐 SHA 回查 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -32,7 +32,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 1 | `aclnnGdnCoreFwdPhase1` / `gdn_core_fwd_phase1` | `local_cumsum -> KKT -> cast -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o` | 已恢复并通过 A2 smoke |
 | Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化，并按冻结范围完成 A2 功能/精度/生产性能收口 |
 | Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
-| Phase 4 | `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | `ChunkCumsumKktSolveTri -> recompute_w_u -> ChunkGatedDeltaRuleFwdHO` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 验收，待 Git 归档 |
+| Phase 4 | `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | `ChunkCumsumKktSolveTri -> recompute_w_u -> ChunkGatedDeltaRuleFwdHO` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
@@ -118,5 +118,9 @@ Phase 3 实现与验收里程碑 commit 为 `7fb8f05b59ab56a8392e0f6c9bef0717148
 - profiler 证明完整 core NPU 任务数 `8 -> 7`，目标段从两个 kernel 合并为一个；
 - 详细证据、噪声判定和范围边界见 `GDN_PHASE4_ACCEPTANCE_A2.md`。
 
-Phase 4 实现与验收里程碑将固定为 `gdn-a2-phase4^{commit}`，归档时只允许快进追加新
-commit 和新 annotated tag，不得移动 `gdn-a2-phase2` / `gdn-a2-phase3`。
+Phase 4 实现与验收里程碑 commit 为 `9719f2701f62ec7ef3d67751af52d1a1ea3c9435`，parent 为
+`f336dbdb7d13ba30a7c41ccc046c4bfe428858cf`。本地 annotated tag `gdn-a2-phase4` object 为
+`dd79407814abfea81e964e207c721fe4e0c9c360`，peeled commit 为上述里程碑。归档只允许快进追加
+新 commit/tag，不得移动 `gdn-a2-phase2` / `gdn-a2-phase3` / `gdn-a2-phase4`。
+远端回查确认 `refs/heads/gdn-a2-phase-archive` 和 `refs/tags/gdn-a2-phase4^{}` 均为
+`9719f2701f62ec7ef3d67751af52d1a1ea3c9435`，Phase 2/3 tag 也保持原 SHA；推送未使用 force。
