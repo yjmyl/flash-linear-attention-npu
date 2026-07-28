@@ -29,7 +29,7 @@
 - `k_dim = 128`
 - `v_dim = 128/256`
 - `chunk_size = 64/128`
-- 额外显存不超过 50 MB
+- 额外显存以 50 MB 为优化目标并完整报告；当前不作为优先于性能的绝对硬门槛
 - 融合版本精度达到 L1，并与六个 AscendC 小算子拼接版本比较
 - 全场景性能不劣于小算子版本
 
@@ -170,7 +170,7 @@ dense/varlen 共用 key 但走不同 `isVarlen` 子路径，因此仍分开验�
 3. `g_cumsum` 全有效元素对两小算子 NPU 拼接基线逐位一致；`A_raw` 严格下三角有效值逐位一致，并单独断言对角、上三角和尾块 padding 为零。基线非有限时改用 CPU FP64 参考，不把 NaN/Inf 当 golden。
 4. profiler 证明局部 ACLNN 数 `2 -> 1` 且实际 NPU kernel 数减少；生产计时关闭 launch blocking，固定 warmup/iteration，AB/BA 测 median、P90、min。
 5. 局部融合 median 不劣于两小算子基线；随后新增不可变 `aclnnGdnCoreFwdPhase3`，端到端 median 不劣于 Phase 2。若局部无收益，停止接入 core并保留 Phase 2。
-6. 记录 fused/baseline workspace max/sum、peak delta 和绝对值；相对基线额外显存不得超过 `50 MB`，绝对 `50 MB` 口径继续单列，不混淆。
+6. 记录 fused/baseline workspace max/sum、peak delta 和绝对值；Phase 3 当时以相对基线额外显存不超过 `50 MB` 为门禁，绝对 `50 MB` 口径继续单列。该历史门禁不自动继承到后续 Phase，后续按当前“性能优先、workspace 持续优化并完整报告”的规则执行。
 
 Phase 3 的第一个实现小步只补 `ChunkCumsumKkt` 独立 ACLNN、torch/Python wrapper、ABI/静态测试
 和最小 smoke 脚本，不修改现有 kernel、tiling、数学顺序或 Phase 2 调度。该入口通过最小 smoke
@@ -204,37 +204,75 @@ raw FP32 g -> chunk-local FP32 cumsum -> KKT -> low-precision hand-off -> solve_
 精度/主路由/state 回归 -> 单点生产性能门禁 -> 全矩阵 -> profiler/workspace -> 验收与归档。任何一层
 失败先刷新 `GDN_CURRENT_STATUS_A2.md`，不跨层继续。
 
-### Phase 4：吸收 recompute_w_u
+### Phase 4：优先融合 fwd_h + fwd_o
 
-目标是让求解后的 A 尽量直接供 `recompute_w_u` 使用，减少：
-
-- A 的 GM 写回/读取
-- w/u 的中间落盘
-- 阶段间同步
-
-此阶段需要重新评估 A、w、u 的存储精度和 workspace 复用，不能只以算子数量减少作为成功标准。
-
-### Phase 5：吸收 fwd_h
-
-重点是状态矩阵 h、`v_new` 和前一阶段 w/u 的片上复用。需要特别关注：
-
-- state 的 `[Hv, K, V]` 规模
-- GVA 下 `Hk` 与 `Hv` 的映射
-- `initial_state` 和 `final_state`
-- dense 与 varlen 的 chunk 索引
-- 50 MB 额外显存限制
-
-### Phase 6：吸收 fwd_o
-
-重点是 q/k/v_new/h 的读取和输出布局，评估是否可以避免中间 transpose 或重复 contiguous。此阶段结束后，核心 GDN 路径应接近：
+令 `A/B/C/D/E/F` 分别表示 `local_cumsum/KKT/solve_tri/recompute_w_u/fwd_h/fwd_o`。
+Phase 4 的正式候选边界调整为：
 
 ```text
-local_cumsum/KKT/solve_tri/recompute_w_u/fwd_h/fwd_o
+(A+B+C) + D + (E+F)
 ```
 
-的单次大融合执行。
+优先选择 `E+F`，是因为 `h` 和 `v_new` 仅为 core 内部中间量；生产路径不需要公开保存它们，
+因此有机会同时消除写回和再次读取。相比之下，`A` 和 `g_cumsum` 仍属于公开输出，先做
+`(A+B+C)+D` 只能减少已求解 A 的再次读取，边际 GM 收益更小。
 
-### Phase 7：纳入 causal_conv1d、RMSNorm 和门控
+Phase 4 先做一个受限 `E+F` pilot，不直接铺开完整矩阵：
+
+- 不可变基线为 `aclnnGdnCoreFwdPhase3`，局部基线为独立 `fwd_h -> fwd_o`；
+- 首个 pilot 仍只验收 `K==V==128` 和外部扩头 GVA，不同时修改 transpose、原生 GVA 或 workspace 别名；
+- tiling、调度和中间结构不得把 `V=128` 或 `Hk==Hv` 固化为后续无法扩展的永久契约；
+- profiler 必须证明目标段由两个 NPU kernel 降为一个，并证明 `h/v_new` 的 GM 生命周期确实缩短；
+- 单点精度或有限性不通过立即停止；生产性能超出噪声回退或没有获得预期收益时，只在该冻结 case
+  上最多做三轮有明确假设的单变量优化，仍无解再反馈决策，不进入完整矩阵。
+
+Phase 4 正式收口仍要求完整冻结矩阵相对 Phase 3 不回退，并同时记录 kernel 数、workspace max/sum、
+peak delta 和公开输出/state 精度；矩阵必须覆盖非空 initial/真实 final state、dense/varlen 元数据、
+尾块、FP16/BF16 与 C64/C128。不能仅凭中间张量理论字节数宣称收益。
+
+### Phase 4 后置规格闸门
+
+在继续吸收 `D` 之前，必须依次关闭两个规格缺口：
+
+1. `K=128, V=256`；
+2. 原生 GVA，即物理 `Hk != Hv` 且 `Hv % Hk == 0`，不依赖外部复制 q/k。
+
+两个规格一次只引入一个变量，分别填写启动卡并使用版本化入口验收。若需要改变已验收 Phase 的
+tiling、数据布局或性能行为，必须新增不可变 checkpoint，不能把规格扩展悄悄并入 Phase 4 或后续
+suffix 融合。Phase 4 首版虽只验收窄范围，但实现结构不得阻碍这两个闸门。
+
+### Phase 5：在 E+F 上吸收 recompute_w_u
+
+规格闸门关闭后，Phase 5 的候选边界为：
+
+```text
+(A+B+C) + (D+E+F)
+```
+
+目标是进一步消除 `w/u` 的 GM 写回和读取。`D` 当前按 chunk 分配、在 chunk 内遍历 value head，
+而 `E` 按 `(batch, value_head)` 持有 stream 并顺序推进 chunk；因此不能直接拼接模板，必须先证明
+统一 scheduler 后仍满足并行度、state 顺序、MIX 同步和 L1/UB 容量要求。Phase 5 从已验收 Phase 4
+和规格 checkpoint 线性追加，不为不同规格预设 `E+F` / `D+E+F` 生产路由分支。
+
+### Phase 6：条件性合并 ABC 与 DEF
+
+只有 profiler 证明剩余 A 重读、launch 和 workspace 生命周期值得继续时，才尝试：
+
+```text
+(A+B+C+D+E+F)
+```
+
+由于 `A` 和 `g_cumsum` 仍需作为公开输出落盘，`ABC + DEF` 合成单 kernel 的边际 GM 收益天然小于
+`D/E/F` 内部融合，而且两侧 scheduler 和同步模型不同。最终生产结构允许停在更快的
+`ABC + DEF` 两 kernel 路径；“单 kernel”不是独立验收目标，完整 core latency、显存和稳定性才是。
+
+### Phase 7：transpose/layout 收敛
+
+核心计算边界稳定后，再单独评估输入 `g/beta`、公开 `g_cumsum` 和输出 `o` 的布局适配。每次只移动
+一条 layout 边界，并用 profiler 证明 transpose kernel 或 GM 流量真实减少，不在同一步同时修改数学
+计算、原生 GVA 或 `V=256`。
+
+### Phase 8：纳入 causal_conv1d、RMSNorm 和门控
 
 完整 Demo 的顶层融合还包括：
 
@@ -242,7 +280,14 @@ local_cumsum/KKT/solve_tri/recompute_w_u/fwd_h/fwd_o
 causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 ```
 
-它们不是当前核心六算子首个融合点，但属于最终全 GDN 目标。纳入顺序应以数据依赖和显存收益为依据，不能为了“算子数量看起来更少”破坏已经稳定的 GDN core。
+纳入顺序由公开中间量、producer/consumer 调度兼容性和完整 Demo profiler 决定；不为了算子数量
+破坏已经更快的 core 拓扑。输出侧 RMSNorm/gate 与输入侧 causal conv 必须分别启动和验收。
+
+### Phase 9：完整 Demo/模型收口
+
+最后在同一安装包、同一输入和同一 device 上比较完整 Demo/模型路径，关闭功能、精度、生产性能、
+绝对/相对 workspace、peak 和稳定性口径。Backward 暂不并入 forward mega-kernel，但必须保留现有
+反向链路回归，不能把 forward 收益建立在破坏保存张量或梯度契约之上。
 
 ## 4. transpose 策略
 
@@ -257,7 +302,8 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
     -> 保持现有输出布局
 ```
 
-这样可以隔离第一轮融合变量。只有当 `KKT + solve_tri` 本身通过精度和性能验收后，才单独评估：
+这样可以隔离早期融合变量。Phase 4--6 保持现有边界；只有 suffix/core 计算稳定并关闭规格闸门后，
+Phase 7 才单独评估：
 
 - fused kernel 是否直接接受外部布局
 - 是否可以消除 transpose
@@ -275,9 +321,14 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 | --- | --- | --- |
 | Phase 1 | `aclnnGdnCoreFwdPhase1` | 一个 executor 内调度六个独立 kernel |
 | Phase 2 | `aclnnGdnCoreFwdPhase2` | 用 `ChunkKktSolveTri` 替换独立 KKT + solve_tri |
+| Phase 3 | `aclnnGdnCoreFwdPhase3` | 用 `ChunkCumsumKktSolveTri` 替换 local_cumsum + KKT + solve_tri |
+| Phase 4 | `aclnnGdnCoreFwdPhase4` | 在 Phase 3 上用 `ChunkGatedDeltaRuleFwdHO` 替换独立 fwd_h + fwd_o |
 | 当前默认 | `aclnnGdnCoreFwd` | 兼容入口，当前指向 Phase 2，可随验收阶段前移 |
 
-后续 Phase 3 必须新增 `aclnnGdnCoreFwdPhase3`，不能修改 Phase 1/2 的阶段调度来承载 Phase 3。版本化入口必须同时存在于同一个完整验收包中，使用同一输入、同一设备和同一 benchmark 直接 A/B；不得用不同安装包的先后测试冒充同环境对照。
+Phase 5 及后续规格 checkpoint 必须继续新增版本化入口，不能修改 Phase 1/2/3/4
+的阶段调度来承载新边界。版本化入口
+必须同时存在于同一个完整验收包中，使用同一输入、同一设备和同一 benchmark 直接 A/B；不得用
+不同安装包的先后测试冒充同环境对照。
 
 ### 5.2 Phase 2 性能对照的进程隔离例外
 
@@ -308,7 +359,7 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 | 规格 | `K=128`，第一阶段 `V=128`；后续 `V=256` |
 | chunk | `64/128` |
 | 性能 | 全场景不劣于六算子基线，重点看端到端 latency |
-| 显存 | 额外显存不超过 50 MB |
+| 显存 | 完整记录 workspace max/sum、相对增量和 peak；额外 50 MB 为优化目标，不是压过性能的绝对硬门槛 |
 | 稳定性 | 至少 warmup 后多次测量，记录均值、P90 和异常情况 |
 
 每次融合只有在以下条件同时满足后才能进入下一阶段：
@@ -318,6 +369,8 @@ causal_conv1d -> GDN core -> RMSNorm -> gated SiLU
 3. 性能没有全场景回退，或回退有明确且获批准的取舍。
 4. workspace、同步和尾块行为已解释清楚。
 5. benchmark 结果和变更说明已归档。
+
+后续 Phase 默认只有一条生产路线，不按 dtype、chunk、layout 或 shape 预设分支。版本化 ACLNN 只用于同包 A/B 和不可变归档。性能门禁不预设统一百分比：冻结用例相对上一已验收 Phase 的稳定基线若出现超出测量噪声的回退，或没有达到启动卡预期收益，则在同一路线上最多执行三轮有 profiler 假设的单变量优化。单纯复测和确认噪声不计轮次；三轮仍无解时，带齐基线差距、瓶颈、已尝试方案和继续优化成本反馈决策，不自动扩展分支。
 
 ## 6. 当前边界和不混淆事项
 
@@ -371,6 +424,21 @@ branch 和远端逐 SHA 回查均已完成。`gdn-a2-phase3^{commit}` 固定为
 `7fb8f05b59ab56a8392e0f6c9bef071714894826`，tag object 固定为
 `b26159171f8aa0b1340f3f927412795853dc72e9`；Phase 3 已标记为 Git 归档完成。Phase 4 只能从该
 不可变里程碑追加新 commit 和新版本化入口，不得原地改写 Phase 3。
+
+截至 2026-07-28，Phase 4 已按冻结 `K==V==128` / 外部 GVA 范围完成 A2 验收：
+
+- 最终边界为 `(A+B+C) + D + (E+F)`，`E+F` 由单 `ChunkGatedDeltaRuleFwdHO` MIX kernel 实现；
+- core dense/varlen `8/8` 加 state `1/1` 与 Phase 3 bit-exact/有限；
+- dense/varlen `8/8` 生产性能点无可复现实质回退，varlen 四点和 dense C64 改善；
+- 密集 C128 配对 median 差异小于 `0.7%`，同时 C128 目标 kernel 由 `115.52 us`
+  降至 `112.24 us`，判为测量噪声范围；
+- core NPU 任务数 `8 -> 7`，所有性能点 workspace 下降 `24.11%~27.89%`；
+- 完整 run 包 SHA256 为 `a297168f3b5d14a09afd23acd060d3ab546bab9cbd71e7c8d301ebe3ce9b9206`，
+  安装 host 库 SHA256 为 `6f67757282030b90f95f92f403beaf1a3bdeeee9cd52ccf9de87f58226c5a23d`；
+- 完整结果见 `GDN_PHASE4_ACCEPTANCE_A2.md`。
+
+Phase 4 归档后的下一路线步骤不是直接融合 `D`，而是依次关闭 `V=256` 和原生 GVA
+两个独立规格闸门；关闭后才能启动 Phase 5。
 
 ## 8. 相关文件
 

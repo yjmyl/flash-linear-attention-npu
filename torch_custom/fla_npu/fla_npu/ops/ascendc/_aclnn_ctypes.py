@@ -115,6 +115,17 @@ _GET_WORKSPACE_ARGTYPES = {
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.POINTER(ctypes.c_void_p),
     ],
+    "aclnnGdnCoreFwdPhase4": [
+        *([ctypes.c_void_p] * 6),
+        ctypes.c_bool,
+        ctypes.c_int64,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_double,
+        *([ctypes.c_void_p] * 4),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_void_p),
+    ],
     "aclnnChunkLocalCumsum": [
         ctypes.c_void_p,
         ctypes.c_void_p,
@@ -748,6 +759,11 @@ def npu_gdn_core_fwd_phase2(q, k, v, g, beta, **kwargs):
 def npu_gdn_core_fwd_phase3(q, k, v, g, beta, **kwargs):
     """Call the immutable Phase 3 fused local-cumsum + KKT checkpoint."""
     return _npu_gdn_core_fwd("aclnnGdnCoreFwdPhase3", q, k, v, g, beta, **kwargs)
+
+
+def npu_gdn_core_fwd_phase4(q, k, v, g, beta, **kwargs):
+    """Call the Phase 4 checkpoint with fused fwd_h + fwd_o."""
+    return _npu_gdn_core_fwd("aclnnGdnCoreFwdPhase4", q, k, v, g, beta, **kwargs)
 
 
 def npu_chunk_local_cumsum(

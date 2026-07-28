@@ -131,6 +131,7 @@ public:
         tiling.dataType = ctx_.dataType;
         tiling.gDataType = ctx_.gDataType;
         tiling.stateDataType = ctx_.stateDataType;
+        tiling.hasGk = ctx_.useGk;
         tiling.isVariedLen = isVariedLen;
         tiling.shapeBatch = shapeBatch;
         tiling.tokenBatch = tokenBatch;

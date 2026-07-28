@@ -6,6 +6,7 @@
 #include "aclnn_gdn_core_fwd_phase_versions.h"
 
 #include "chunk_gated_delta_rule_fwd_h.h"
+#include "../../../chunk_gated_delta_rule_fwd_ho/op_host/op_api/chunk_gated_delta_rule_fwd_ho.h"
 #include "../../../chunk_fwd_o/op_host/op_api/chunk_fwd_o.h"
 #include "../../../recompute_wu_fwd/op_host/op_api/recompute_wu_fwd.h"
 #include "../../../solve_tri/op_host/op_api/aclnn_solve_tri.h"
@@ -43,6 +44,7 @@ enum class GdnCorePhase {
     PHASE_1_SIX_KERNELS,
     PHASE_2_FUSED_KKT_SOLVE,
     PHASE_3_FUSED_CUMSUM_KKT_SOLVE,
+    PHASE_4_FUSED_FWD_HO,
 };
 
 struct GdnCoreFwdParams {
@@ -346,17 +348,23 @@ static aclnnStatus GdnCoreFwdGetWorkspaceSizeImpl(
                                       params.k->GetDataType(), Format::FORMAT_ND);
     auto u = executorPtr->AllocTensor(MakeShape({batch, hv, seqlen, vDim}),
                                       params.v->GetDataType(), Format::FORMAT_ND);
-    auto h = executorPtr->AllocTensor(MakeShape({batch, hv, totalChunks, kDim, vDim}),
-                                      params.v->GetDataType(), Format::FORMAT_ND);
-    auto vNew = executorPtr->AllocTensor(MakeShape({batch, hv, seqlen, vDim}),
-                                         params.v->GetDataType(), Format::FORMAT_ND);
+    aclTensor *h = nullptr;
+    aclTensor *vNew = nullptr;
+    if (phase != GdnCorePhase::PHASE_4_FUSED_FWD_HO) {
+        h = executorPtr->AllocTensor(MakeShape({batch, hv, totalChunks, kDim, vDim}),
+                                     params.v->GetDataType(), Format::FORMAT_ND);
+        vNew = executorPtr->AllocTensor(MakeShape({batch, hv, seqlen, vDim}),
+                                        params.v->GetDataType(), Format::FORMAT_ND);
+    }
     auto finalState = params.finalStateOutOptional;
     if (!params.outputFinalState) {
         finalState = executorPtr->AllocTensor(MakeShape({1}), DataType::DT_FLOAT, Format::FORMAT_ND);
     }
     GDN_STAGE_CHECK(gCumsumBht != nullptr && aSolvedBhtc != nullptr &&
                         (phase != GdnCorePhase::PHASE_1_SIX_KERNELS || aRawBhtc != nullptr) &&
-                        w != nullptr && u != nullptr && h != nullptr && vNew != nullptr && finalState != nullptr,
+                        w != nullptr && u != nullptr &&
+                        (phase == GdnCorePhase::PHASE_4_FUSED_FWD_HO || (h != nullptr && vNew != nullptr)) &&
+                        finalState != nullptr,
                     169101);
 
     const aclTensor *gBht = TransposeContiguous(params.g, {0, 2, 1}, executorPtr);
@@ -370,7 +378,8 @@ static aclnnStatus GdnCoreFwdGetWorkspaceSizeImpl(
 
     const aclTensor *gCumsum = nullptr;
     const aclTensor *aForValueHeads = nullptr;
-    if (phase == GdnCorePhase::PHASE_3_FUSED_CUMSUM_KKT_SOLVE) {
+    if (phase == GdnCorePhase::PHASE_3_FUSED_CUMSUM_KKT_SOLVE ||
+        phase == GdnCorePhase::PHASE_4_FUSED_FWD_HO) {
         auto cumsumKktSolve = l0op::ChunkCumsumKktSolveTri(
             params.k, gBht, betaBht, params.cuSeqlensOptional, params.chunkIndicesOptional,
             params.chunkSize, gCumsumBht, aSolvedBhtc, executorPtr);
@@ -434,16 +443,24 @@ static aclnnStatus GdnCoreFwdGetWorkspaceSizeImpl(
                                    w, u, executorPtr);
     GDN_STAGE_CHECK(wu[0] != nullptr && wu[1] != nullptr, 169109);
 
-    auto hvResult = l0op::ChunkGatedDeltaRuleFwdH(
-        params.k, wu[0], wu[1], gCumsum, nullptr, params.initialStateOptional,
-        params.cuSeqlensOptional, params.chunkIndicesOptional, params.outputFinalState, params.chunkSize,
-        h, vNew, finalState, executorPtr);
-    GDN_STAGE_CHECK(hvResult[0] != nullptr && hvResult[1] != nullptr, 169110);
+    if (phase == GdnCorePhase::PHASE_4_FUSED_FWD_HO) {
+        auto hoResult = l0op::ChunkGatedDeltaRuleFwdHO(
+            params.q, params.k, wu[0], wu[1], gCumsum, nullptr, params.initialStateOptional,
+            params.cuSeqlensOptional, params.chunkIndicesOptional, params.outputFinalState,
+            params.chunkSize, params.scale, params.oOut, finalState, executorPtr);
+        GDN_STAGE_CHECK(hoResult[0] != nullptr, 169110);
+    } else {
+        auto hvResult = l0op::ChunkGatedDeltaRuleFwdH(
+            params.k, wu[0], wu[1], gCumsum, nullptr, params.initialStateOptional,
+            params.cuSeqlensOptional, params.chunkIndicesOptional, params.outputFinalState, params.chunkSize,
+            h, vNew, finalState, executorPtr);
+        GDN_STAGE_CHECK(hvResult[0] != nullptr && hvResult[1] != nullptr, 169110);
 
-    auto oResult = l0op::ChunkFwdO(params.q, params.k, hvResult[1], hvResult[0], gCumsum,
-                                   params.cuSeqlensOptional, params.chunkIndicesOptional, params.scale,
-                                   params.chunkSize, params.oOut, executorPtr);
-    GDN_STAGE_CHECK(oResult[0] != nullptr, 169111);
+        auto oResult = l0op::ChunkFwdO(params.q, params.k, hvResult[1], hvResult[0], gCumsum,
+                                       params.cuSeqlensOptional, params.chunkIndicesOptional, params.scale,
+                                       params.chunkSize, params.oOut, executorPtr);
+        GDN_STAGE_CHECK(oResult[0] != nullptr, 169111);
+    }
 
     *workspaceSize = uniqueExecutor->GetWorkspaceSize();
     uniqueExecutor.ReleaseTo(executor);
@@ -510,6 +527,20 @@ aclnnStatus aclnnGdnCoreFwdPhase3GetWorkspaceSize(
         GDN_CORE_GET_WORKSPACE_ARGS, GdnCorePhase::PHASE_3_FUSED_CUMSUM_KKT_SOLVE);
 }
 
+aclnnStatus aclnnGdnCoreFwdPhase4GetWorkspaceSize(
+    const aclTensor *q, const aclTensor *k, const aclTensor *v, const aclTensor *g, const aclTensor *beta,
+    const aclTensor *initialStateOptional, bool outputFinalState, int64_t chunkSize,
+    const aclIntArray *cuSeqlensOptional, const aclIntArray *chunkIndicesOptional, double scale,
+    const aclTensor *oOut, const aclTensor *finalStateOutOptional, const aclTensor *gCumsumOut,
+    const aclTensor *aOut, uint64_t *workspaceSize, aclOpExecutor **executor)
+{
+    L2_DFX_PHASE_1(aclnnGdnCoreFwdPhase4,
+                   DFX_IN(q, k, v, g, beta, initialStateOptional, cuSeqlensOptional, chunkIndicesOptional),
+                   DFX_OUT(oOut, finalStateOutOptional, gCumsumOut, aOut));
+    return GdnCoreFwdGetWorkspaceSizeImpl(
+        GDN_CORE_GET_WORKSPACE_ARGS, GdnCorePhase::PHASE_4_FUSED_FWD_HO);
+}
+
 #undef GDN_CORE_GET_WORKSPACE_ARGS
 
 aclnnStatus aclnnGdnCoreFwd(void *workspace, uint64_t workspaceSize, aclOpExecutor *executor, aclrtStream stream)
@@ -544,6 +575,15 @@ aclnnStatus aclnnGdnCoreFwdPhase3(
     L2_DFX_PHASE_2(aclnnGdnCoreFwdPhase3);
     CHECK_COND(CommonOpExecutorRun(workspace, workspaceSize, executor, stream) == ACLNN_SUCCESS,
                ACLNN_ERR_INNER, "GdnCoreFwdPhase3 launch failed.");
+    return ACLNN_SUCCESS;
+}
+
+aclnnStatus aclnnGdnCoreFwdPhase4(
+    void *workspace, uint64_t workspaceSize, aclOpExecutor *executor, aclrtStream stream)
+{
+    L2_DFX_PHASE_2(aclnnGdnCoreFwdPhase4);
+    CHECK_COND(CommonOpExecutorRun(workspace, workspaceSize, executor, stream) == ACLNN_SUCCESS,
+               ACLNN_ERR_INNER, "GdnCoreFwdPhase4 launch failed.");
     return ACLNN_SUCCESS;
 }
 

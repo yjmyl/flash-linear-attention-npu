@@ -33,11 +33,38 @@ the same script rather than creating independent benchmarks.
 Permanent one-ACLNN checkpoints are named
 `phase1_one_aclnn_six_kernels` and
 `phase2_one_aclnn_fused_kkt_solve`, and
-`phase3_one_aclnn_fused_cumsum_kkt`. The Phase 3 variant name is retained for
+`phase3_one_aclnn_fused_cumsum_kkt`, and
+`phase4_one_aclnn_fused_fwd_ho`. The Phase 3 variant name is retained for
 report compatibility, but its final route is cumulative
 `ChunkCumsumKktSolveTri` (`cumsum + KKT + solve_tri`), not the rejected split
 `ChunkCumsumKkt -> Cast -> SolveTri` candidate. The unversioned `composite_one_aclnn`
 tracks the current default and must not be used as the only historical A/B.
+
+Use `--phase4-accuracy-only` to compare Phase 4 directly with immutable Phase 3,
+use `--phase4-paired-only` for the primary same-process performance comparison,
+or run either checkpoint in an independent process with `--standalone-variant`.
+The paired mode alternates Phase 3/4 launch order, reports both per-variant
+latency summaries and per-iteration deltas, and records each checkpoint's
+workspace in the same report:
+
+```bash
+python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
+  --device 1 --dtype fp16 --batch 1 --key-heads 4 --value-heads 8 \
+  --tokens 1025 --chunk-size 64 --phase4-accuracy-only \
+  --output test_output/gdn_ablation/phase4_accuracy.json
+
+python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
+  --device 1 --dtype fp16 --batch 1 --key-heads 4 --value-heads 8 \
+  --tokens 1025 --chunk-size 64 --phase4-paired-only \
+  --warmup 20 --iterations 200 \
+  --output test_output/gdn_ablation/phase4_paired.json
+
+python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
+  --device 1 --dtype fp16 --batch 1 --key-heads 4 --value-heads 8 \
+  --tokens 1025 --chunk-size 64 --standalone-variant phase4_one_aclnn_fused_fwd_ho \
+  --warmup 10 --iterations 50 --profile \
+  --output test_output/gdn_ablation/phase4_standalone.json
+```
 
 Phase 2 also adds the five-call `fused_kkt_solve` variant. It replaces only
 `chunk_scaled_dot_kkt -> solve_tri`; local cumsum, layout handling and the four

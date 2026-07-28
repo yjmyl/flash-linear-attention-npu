@@ -9,6 +9,7 @@ Versioned entries preserve ablation checkpoints:
 | `aclnnGdnCoreFwdPhase1` | six independent GDN stage kernels in one executor |
 | `aclnnGdnCoreFwdPhase2` | fused `ChunkKktSolveTri` plus the other four stage kernels |
 | `aclnnGdnCoreFwdPhase3` | cumulative `ChunkCumsumKktSolveTri` plus the remaining three stage kernels |
+| `aclnnGdnCoreFwdPhase4` | Phase 3 preprocessing plus fused `ChunkGatedDeltaRuleFwdHO` |
 | `aclnnGdnCoreFwd` | compatibility alias, currently equivalent to Phase 2 |
 
 Phase 1 preserves:
@@ -21,12 +22,15 @@ recompute_w_u -> chunk_gated_delta_rule_fwd_h -> chunk_fwd_o
 Phase 2 replaces KKT and solve_tri with `ChunkKktSolveTri`.
 Phase 3 additionally absorbs the raw-g local cumsum into
 `ChunkCumsumKktSolveTri`, while preserving the public FP32 `gCumsumOut` and the
-same solved-A contract. All fixed entries share the same public tensor contract
-and are exported by the same package so they can be compared without
-reinstalling a different wheel.
+same solved-A contract. Phase 4 preserves that preprocessing route and executes
+`fwd_h -> fwd_o` in one `ChunkGatedDeltaRuleFwdHO` MIX kernel; its internal
+`h` and `v_new` buffers live in the ACLNN workspace rather than as executor
+tensors. All fixed entries share the same public tensor contract and are
+exported by the same package so they can be compared without reinstalling a
+different wheel.
 
-The Phase 2 versus Phase 3 production benchmark measures this complete six-stage
-GDN forward core path. It is not a full Demo/model benchmark and does not include
+Phase-to-Phase production benchmarks measure this complete six-stage GDN
+forward core path. They are not full Demo/model benchmarks and do not include
 causal convolution, RMSNorm, or the output gate.
 
 ## Interface
@@ -102,9 +106,12 @@ o, final_state, g_cumsum, a = gdn_core_fwd(
 )
 ```
 
-Use `gdn_core_fwd_phase1`, `gdn_core_fwd_phase2`, and `gdn_core_fwd_phase3` for
-permanent Phase A/B. The unversioned `gdn_core_fwd` is only the current default
-and remains equivalent to Phase 2 for compatibility.
+Use `gdn_core_fwd_phase1`, `gdn_core_fwd_phase2`, `gdn_core_fwd_phase3`, and
+`gdn_core_fwd_phase4` for permanent Phase A/B. Phase 4 is accepted for the
+frozen A2 `K==V==128`, external-GVA scope; later specification gates must add
+new checkpoints instead of changing this path in place. The unversioned
+`gdn_core_fwd` is only the current default and remains equivalent to Phase 2
+for compatibility.
 
 The public wrapper is eager-only. The forward's existing Python autograd wrapper
 continues to use the established GDN backward chain.

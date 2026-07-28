@@ -12,24 +12,7 @@
 
 #include "../../chunk_fwd_o_struct.h"
 
-// constexpr uint32_t PING_PONG_STAGES = 1;
-constexpr uint32_t PING_PONG_STAGES = 2;
-constexpr uint32_t BYTE_SIZE_16_BIT = 2;
-
-template <typename T>
-CATLASS_DEVICE T AlignUp(T a, T b) {
-    return (b == 0) ? 0 : (a + b - 1) / b * b;
-}
-
-template <typename T>
-CATLASS_DEVICE T Min(T a, T b) {
-    return (a > b) ? b : a;
-}
-
-template <typename T>
-CATLASS_DEVICE T Max(T a, T b) {
-    return (a > b) ? a : b;
-}
+constexpr uint32_t GDN_FWD_O_PING_PONG_STAGES = 2;
 
 namespace Catlass::Gemm::Block {
 
@@ -75,8 +58,8 @@ struct BlockSchedulerGdnFwdO {
     bool processNewTask {true};
     bool firstLoop {true};
     bool lastLoop {false};
-    GDNFwdOOffsets offsets[PING_PONG_STAGES];
-    int32_t currStage{PING_PONG_STAGES - 1};
+    GDNFwdOOffsets offsets[GDN_FWD_O_PING_PONG_STAGES];
+    int32_t currStage{GDN_FWD_O_PING_PONG_STAGES - 1};
 
     uint32_t baseTaskIdx;
     uint32_t chunkIdx;
@@ -95,10 +78,10 @@ struct BlockSchedulerGdnFwdO {
     AscendC::GlobalTensor<int64_t> gmSeqlen;
     AscendC::GlobalTensor<int64_t> gmChunkOffsets;
 
-    Arch::CrossCoreFlag cube1Done[PING_PONG_STAGES] = {0, 1};
-    Arch::CrossCoreFlag vec1Done[PING_PONG_STAGES] = {2, 3};
-    Arch::CrossCoreFlag cube3Done[PING_PONG_STAGES] = {4, 5};
-    Arch::CrossCoreFlag vec2Done[PING_PONG_STAGES] = {6, 7};
+    Arch::CrossCoreFlag cube1Done[GDN_FWD_O_PING_PONG_STAGES] = {0, 1};
+    Arch::CrossCoreFlag vec1Done[GDN_FWD_O_PING_PONG_STAGES] = {2, 3};
+    Arch::CrossCoreFlag cube3Done[GDN_FWD_O_PING_PONG_STAGES] = {4, 5};
+    Arch::CrossCoreFlag vec2Done[GDN_FWD_O_PING_PONG_STAGES] = {6, 7};
 
     CATLASS_DEVICE
     BlockSchedulerGdnFwdO() {}
@@ -132,7 +115,7 @@ struct BlockSchedulerGdnFwdO {
         vBlockSize = vHeadDim;
         taskNum = shapeBatch * numChunks * vNumHead;
         headGroups = vNumHead / kNumHead;
-        taskIdx = cubeCoreIdx * PING_PONG_STAGES;
+        taskIdx = cubeCoreIdx * GDN_FWD_O_PING_PONG_STAGES;
         isRunning = taskIdx < taskNum;
 
     }
@@ -143,14 +126,14 @@ struct BlockSchedulerGdnFwdO {
             headInnerIdx = 0;
             baseTaskIdx = taskIdx;
         } else {
-            headInnerIdx = (headInnerIdx + 1) % PING_PONG_STAGES;
+            headInnerIdx = (headInnerIdx + 1) % GDN_FWD_O_PING_PONG_STAGES;
         }
 
         uint32_t curTaskIdx = baseTaskIdx + headInnerIdx;
         if (unlikely(curTaskIdx >= taskNum)) {
             isRunning = false;
             processNewTask = true;
-            currStage = (currStage + 1) % PING_PONG_STAGES;
+            currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
             return;
         }
 
@@ -174,7 +157,8 @@ struct BlockSchedulerGdnFwdO {
         const int64_t hBlockOffset = (static_cast<int64_t>(shapeBatchIdx) * vNumHead * numChunks +
                                       static_cast<int64_t>(vHeadIdx) * numChunks + chunkIdx) *
                                      kHeadDim;
-        const int64_t workStageOffset = static_cast<int64_t>(cubeCoreIdx) * PING_PONG_STAGES + currStage;
+        const int64_t workStageOffset =
+            static_cast<int64_t>(cubeCoreIdx) * GDN_FWD_O_PING_PONG_STAGES + currStage;
         offsets[currStage].qkOffset = qkRowOffset * kHeadDim;
         offsets[currStage].ovOffset = ovRowOffset * vHeadDim + vBlockOffset;
         offsets[currStage].hOffset = hBlockOffset * vHeadDim + vBlockOffset;
@@ -189,22 +173,22 @@ struct BlockSchedulerGdnFwdO {
         offsets[currStage].headIdx = vHeadIdx;
         offsets[currStage].chunkIdx = chunkIdx;
 
-        processNewTask = headInnerIdx == PING_PONG_STAGES - 1;
+        processNewTask = headInnerIdx == GDN_FWD_O_PING_PONG_STAGES - 1;
         if (processNewTask) {
-            taskIdx += PING_PONG_STAGES * cubeCoreNum;
+            taskIdx += GDN_FWD_O_PING_PONG_STAGES * cubeCoreNum;
         }
 
-        currStage = (currStage + 1) % PING_PONG_STAGES;
+        currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
     }
 
     CATLASS_DEVICE
     uint32_t GetCurStageId() const {
-        return (currStage + PING_PONG_STAGES - 1) % PING_PONG_STAGES;
+        return (currStage + GDN_FWD_O_PING_PONG_STAGES - 1) % GDN_FWD_O_PING_PONG_STAGES;
     }
 
     CATLASS_DEVICE
     uint32_t GetPrevStageId() const {
-        return (currStage + PING_PONG_STAGES - 2) % PING_PONG_STAGES;
+        return (currStage + GDN_FWD_O_PING_PONG_STAGES - 2) % GDN_FWD_O_PING_PONG_STAGES;
     }
 
 

@@ -28,13 +28,13 @@
 | 保留项 | 哪些 GM workspace、transpose 或外部扩头暂时保留？ |
 | 不做项 | 哪些规格明确不在本阶段同时修改？ |
 | 验收矩阵 | dense/varlen、dtype、chunk、尾块、GVA 覆盖哪些用例？ |
-| 成功标准 | 精度、latency、kernel 数、workspace 门槛是什么？ |
+| 成功标准 | 精度、latency、kernel 数目标是什么？workspace 如何记录和优化？ |
 
 启动卡未冻结时不修改 kernel。实施中如果想顺手修改 transpose、原生 GVA、`V=256` 或 workspace 复用，默认拒绝，除非先更新启动卡和主计划。
 
 ## 3. 最短反馈流水线
 
-固定按以下顺序执行，任一层失败立即停止：
+固定按以下顺序执行，任一层未通过就停止向下一层扩展：
 
 ```text
 本地语法/ABI/静态检查
@@ -51,6 +51,7 @@
 ```
 
 不在 smoke case 失败时继续跑全量用例，不在精度未通过时跑性能，不在版本哈希未确认时解释运行结果。
+性能层未通过时只在当前冻结 case 上执行下文规定的有限优化轮次，不直接铺开矩阵。
 
 ## 4. 远程构建与版本规则
 
@@ -119,6 +120,10 @@ dense 通过不能证明无竞态，必须用 varlen、尾块和多 core 并行�
 - 同时记录 ACLNN 调用数、NPU kernel 数、workspace max/sum 和 peak allocated delta。
 - 减少 ACLNN 数不等于真正融合；必须由 profiler 证明 NPU kernel 或 GM 往返确实减少。
 - 一个阶段只有在精度、功能覆盖、性能、workspace 和 profiler 证据均归档后才能关闭。
+- workspace 的绝对 `<=50 MB` 是优化目标和报告项，不是当前融合路线的硬门槛；优先保证性能，且应继续寻找不伤害性能的 workspace 降低方案。
+- 性能不达标指冻结用例相对上一已验收 Phase 的稳定基线出现超出测量噪声的回退，或融合没有获得启动卡预期的收益；不预先用一个统一百分比替代 AB/BA、median/P90 和 profiler 证据。
+- 性能不达标后，默认在同一路线上最多进行三轮优化。每轮必须有明确瓶颈假设，只改变一个主要变量，并重跑同一冻结 case、更新 profiler；单纯复测、增加 iteration 或确认噪声不计为一轮。
+- 三轮后仍不达标，整理基线差距、受影响身份、profiler 瓶颈、三轮改动及结果和下一方案成本，反馈人工决策；不得自行增加按 dtype、chunk、layout 或 shape 的生产分支。
 
 ## 8. 控制时间和 Token
 
@@ -142,3 +147,21 @@ Phase 3 吸收 `local_cumsum` 时固定以下边界：
 
 该清单后续已执行完成。早期 `(local_cumsum + KKT) + solve_tri` 拆分 core 候选因丢失
 Phase 2 的 `KKT + solve_tri` 融合收益被淘汰，最终 Phase 3 为累积 `ChunkCumsumKktSolveTri`。
+
+## 10. 后续融合边界选择规则
+
+Phase 4 起不默认按前缀顺序机械吸收下一个算子。启动前可用静态分析和已有 profiler 比较相邻候选边界，但只选择其中一条进入实现，不并行铺设多条生产路线：
+
+- 中间张量是否为公开输出；公开输出仍需写回，不能把理论上的全量 GM 消除计入收益；
+- producer/consumer 的 task ownership、chunk/head 遍历顺序和 MIX 同步是否兼容；
+- 能消除的是单次读取、完整写回+读取，还是仅 ACLNN/launch；
+- 合并后是否仍需相同或更大的系统/user workspace；
+- 候选能否沿单一生产路线继续演进，而不引入长期规格路由。
+
+优先验证非公开大中间量的 producer/consumer 融合。允许按 Phase 线性形成两个已验收的融合组，再根据 profiler
+决定是否合成单 kernel；不能把“累计前缀更长”或“kernel 数更少”本身当作性能结论。一个局部融合
+只有同时通过独立 A/B 和完整 core A/B 才能成为正式 Phase。版本化 ACLNN 和旧 Phase kernel 仅用于
+不可变对照与归档，不得被解释为默认入口需要按输入身份维护多条运行时分支。
+
+`V=256`、原生 GVA、transpose/layout 和 workspace 别名均属于独立变量。若路线要求在两个融合
+Phase 之间关闭规格缺口，必须分别建立启动卡和版本化 checkpoint，不得隐藏在下一融合 Phase 中。

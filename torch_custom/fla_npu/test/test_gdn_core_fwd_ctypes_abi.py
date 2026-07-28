@@ -213,12 +213,14 @@ class GdnCoreFwdCtypesAbiTest(unittest.TestCase):
         self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase1"], expected)
         self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase2"], expected)
         self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase3"], expected)
+        self.assertEqual(module._GET_WORKSPACE_ARGTYPES["aclnnGdnCoreFwdPhase4"], expected)
 
     def test_versioned_phase_wrappers_use_fixed_aclnn_symbols(self):
         for wrapper_name, aclnn_name in (
             ("npu_gdn_core_fwd_phase1", "aclnnGdnCoreFwdPhase1"),
             ("npu_gdn_core_fwd_phase2", "aclnnGdnCoreFwdPhase2"),
             ("npu_gdn_core_fwd_phase3", "aclnnGdnCoreFwdPhase3"),
+            ("npu_gdn_core_fwd_phase4", "aclnnGdnCoreFwdPhase4"),
         ):
             with self.subTest(wrapper=wrapper_name):
                 captured = {}
@@ -236,8 +238,11 @@ class GdnCoreFwdCtypesAbiTest(unittest.TestCase):
         self.assertIn("l0op::ChunkKktSolveTri", source)
         self.assertIn("GdnCorePhase::PHASE_3_FUSED_CUMSUM_KKT_SOLVE", source)
         self.assertIn("l0op::ChunkCumsumKktSolveTri", source)
+        self.assertIn("GdnCorePhase::PHASE_4_FUSED_FWD_HO", source)
+        self.assertIn("l0op::ChunkGatedDeltaRuleFwdHO", source)
         self.assertNotIn("l0op::ChunkCumsumKkt(", source)
         self.assertIn("aclnnGdnCoreFwdPhase3GetWorkspaceSize", source)
+        self.assertIn("aclnnGdnCoreFwdPhase4GetWorkspaceSize", source)
 
     def test_preprocess_direct_wrappers_match_aclnn_descriptor_kinds(self):
         captured = {}

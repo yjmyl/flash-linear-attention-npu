@@ -21,6 +21,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 1 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 历史恢复点；版本化 ACLNN 已与 Phase 2 并存 |
 | Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能证据由后续 commit `2b8161d` 追加，不移动该 tag |
 | Phase 3 | `gdn-a2-phase-archive` | `gdn-a2-phase3^{commit}` = `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 不可变 annotated tag 已远端推送并逐 SHA 回查 |
+| Phase 4 | `gdn-a2-phase-archive` | `gdn-a2-phase4^{commit}` | 冻结验收通过，精确 commit/tag 身份待归档后回填 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -31,6 +32,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 1 | `aclnnGdnCoreFwdPhase1` / `gdn_core_fwd_phase1` | `local_cumsum -> KKT -> cast -> solve_tri -> recompute_w_u -> fwd_h -> fwd_o` | 已恢复并通过 A2 smoke |
 | Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化，并按冻结范围完成 A2 功能/精度/生产性能收口 |
 | Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
+| Phase 4 | `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | `ChunkCumsumKktSolveTri -> recompute_w_u -> ChunkGatedDeltaRuleFwdHO` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 验收，待 Git 归档 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
@@ -49,6 +51,7 @@ Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_t
 phase1_one_aclnn_six_kernels
 phase2_one_aclnn_fused_kkt_solve
 phase3_one_aclnn_fused_cumsum_kkt
+phase4_one_aclnn_fused_fwd_ho
 ```
 
 Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径是累积单 kernel
@@ -104,3 +107,16 @@ Phase 3 实现与验收里程碑 commit 为 `7fb8f05b59ab56a8392e0f6c9bef0717148
 `1595456dabbae42e70912c4b8981bbbdaace3279`，随后 Phase 3 tag 单独推送；最终 `git ls-remote`
 逐 SHA 回查确认 branch、Phase 2 tag 和 Phase 3 tag 均与冻结记录一致。推送过程未使用 force，
 也未移动 `gdn-a2-phase2`。
+
+## 2026-07-28 Phase 4 验收收口
+
+- 最终边界为 `(A+B+C) + D + (E+F)`，`E+F` 由单 `ChunkGatedDeltaRuleFwdHO` MIX kernel 实现；
+- 完整 run 包 SHA256：`a297168f3b5d14a09afd23acd060d3ab546bab9cbd71e7c8d301ebe3ce9b9206`；
+- 安装 host 库 SHA256：`6f67757282030b90f95f92f403beaf1a3bdeeee9cd52ccf9de87f58226c5a23d`；
+- core dense/varlen `8/8` 加 state `1/1` 对 Phase 3 bit-exact/有限；
+- dense/varlen `8/8` 生产性能点无可复现实质回退，workspace 全部下降 `24.11%~27.89%`；
+- profiler 证明完整 core NPU 任务数 `8 -> 7`，目标段从两个 kernel 合并为一个；
+- 详细证据、噪声判定和范围边界见 `GDN_PHASE4_ACCEPTANCE_A2.md`。
+
+Phase 4 实现与验收里程碑将固定为 `gdn-a2-phase4^{commit}`，归档时只允许快进追加新
+commit 和新 annotated tag，不得移动 `gdn-a2-phase2` / `gdn-a2-phase3`。

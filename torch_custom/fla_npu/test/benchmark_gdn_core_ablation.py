@@ -28,6 +28,7 @@ STANDALONE_VARIANTS = (
     "phase1_one_aclnn_six_kernels",
     "phase2_one_aclnn_fused_kkt_solve",
     "phase3_one_aclnn_fused_cumsum_kkt",
+    "phase4_one_aclnn_fused_fwd_ho",
 )
 
 
@@ -274,6 +275,10 @@ def run_composite_phase3(inputs: dict):
     return run_composite_with(ascendc.gdn_core_fwd_phase3, inputs)
 
 
+def run_composite_phase4(inputs: dict):
+    return run_composite_with(ascendc.gdn_core_fwd_phase4, inputs)
+
+
 def tensor_finiteness(tensor: torch.Tensor | None) -> dict:
     if tensor is None:
         return {
@@ -485,6 +490,17 @@ def latency_summary(samples: list[float]) -> dict:
     }
 
 
+def percentage_summary(samples: list[float]) -> dict:
+    return {
+        "iterations": len(samples),
+        "mean_pct": statistics.fmean(samples),
+        "median_pct": statistics.median(samples),
+        "p90_pct": percentile(samples, 0.90),
+        "min_pct": min(samples),
+        "samples_pct": samples,
+    }
+
+
 def run_synchronized(function, inputs: dict) -> None:
     outputs = function(inputs)
     torch.npu.synchronize()
@@ -547,6 +563,14 @@ def measure_paired_latency(
 
     first_summary = latency_summary(samples[first_name])
     second_summary = latency_summary(samples[second_name])
+    pairwise_delta_ms = [
+        second - first
+        for first, second in zip(samples[first_name], samples[second_name])
+    ]
+    pairwise_change_pct = [
+        (second / first - 1.0) * 100.0
+        for first, second in zip(samples[first_name], samples[second_name])
+    ]
     result = {
         "method": "paired_alternating_npu_events",
         "order": (
@@ -561,6 +585,8 @@ def measure_paired_latency(
         "second_vs_first_median_change_pct": (
             (second_summary["median_ms"] / first_summary["median_ms"] - 1.0) * 100.0
         ),
+        "pairwise_second_minus_first_ms": latency_summary(pairwise_delta_ms),
+        "pairwise_second_vs_first_change_pct": percentage_summary(pairwise_change_pct),
     }
     clear_allocator_state()
     return result
@@ -635,6 +661,7 @@ def run_standalone(args, inputs: dict) -> None:
         "phase1_one_aclnn_six_kernels": run_composite_phase1,
         "phase2_one_aclnn_fused_kkt_solve": run_composite_phase2,
         "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
+        "phase4_one_aclnn_fused_fwd_ho": run_composite_phase4,
     }
     function = functions[args.standalone_variant]
     outputs = function(inputs)
@@ -699,6 +726,78 @@ def run_phase3_accuracy(args, inputs: dict) -> None:
     print(json.dumps(report, indent=2))
 
 
+def run_phase4_accuracy(args, inputs: dict) -> None:
+    phase3 = run_composite_phase3(inputs)
+    phase4 = run_composite_phase4(inputs)
+    torch.npu.synchronize()
+    comparison = compare_results(phase3, phase4, inputs)
+    finiteness = {
+        "phase3_one_aclnn_fused_cumsum_kkt": standalone_finiteness(phase3, inputs),
+        "phase4_one_aclnn_fused_fwd_ho": standalone_finiteness(phase4, inputs),
+    }
+    if not comparison["bit_exact"]:
+        raise AssertionError(f"Phase 4 is not bit exact with Phase 3: {comparison}")
+    if not all(item["all_finite"] for item in finiteness.values()):
+        raise AssertionError(f"Phase 3/4 produced non-finite output/state: {finiteness}")
+    report = {
+        "case_id": args.case_id,
+        "measurement": {"method": "phase3_phase4_accuracy_only"},
+        "contract": contract_report(args, inputs),
+        "accuracy": {"phase4_vs_phase3": comparison},
+        "finiteness": finiteness,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
+def run_phase4_paired(args, inputs: dict) -> None:
+    functions = {
+        "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
+        "phase4_one_aclnn_fused_fwd_ho": run_composite_phase4,
+    }
+    finiteness = {}
+    workspaces = {}
+    for name, function in functions.items():
+        outputs = function(inputs)
+        torch.npu.synchronize()
+        finiteness[name] = standalone_finiteness(outputs, inputs)
+        del outputs
+        clear_allocator_state()
+        workspaces[name] = measure_once(function, inputs)
+        if workspaces[name]["aclnn_call_count"] != 1:
+            raise AssertionError(
+                f"{name}: expected 1 ACLNN call, "
+                f"observed {workspaces[name]['aclnn_call_count']}"
+            )
+    if not all(item["all_finite"] for item in finiteness.values()):
+        raise AssertionError(f"Phase 3/4 produced non-finite output/state: {finiteness}")
+
+    paired = measure_paired_latency(
+        "phase3_one_aclnn_fused_cumsum_kkt",
+        run_composite_phase3,
+        "phase4_one_aclnn_fused_fwd_ho",
+        run_composite_phase4,
+        inputs,
+        args.warmup,
+        args.iterations,
+    )
+    report = {
+        "case_id": args.case_id,
+        "measurement": {
+            "method": "phase3_phase4_paired_alternating_npu_events",
+            "ascend_launch_blocking": os.environ.get("ASCEND_LAUNCH_BLOCKING"),
+        },
+        "contract": contract_report(args, inputs),
+        "finiteness": finiteness,
+        "variants": workspaces,
+        "paired_latency": paired,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=int(os.environ.get("TEST_DEVICE_ID", 0)))
@@ -731,15 +830,32 @@ def main() -> None:
         action="store_true",
         help="Compare only the immutable Phase 2 and Phase 3 core checkpoints.",
     )
+    parser.add_argument(
+        "--phase4-accuracy-only",
+        action="store_true",
+        help="Compare only the immutable Phase 3 checkpoint and the Phase 4 pilot.",
+    )
+    parser.add_argument(
+        "--phase4-paired-only",
+        action="store_true",
+        help="Measure only Phase 3 versus Phase 4 with alternating in-process NPU events.",
+    )
     parser.add_argument("--case-id", default="")
     parser.add_argument("--output", type=Path, default=Path("gdn_core_ablation.json"))
     args = parser.parse_args()
 
     selected_modes = sum(bool(value) for value in (
-        args.paired_only, args.standalone_variant, args.phase3_accuracy_only
+        args.paired_only,
+        args.standalone_variant,
+        args.phase3_accuracy_only,
+        args.phase4_accuracy_only,
+        args.phase4_paired_only,
     ))
     if selected_modes > 1:
-        parser.error("--paired-only, --standalone-variant and --phase3-accuracy-only are mutually exclusive")
+        parser.error(
+            "--paired-only, --standalone-variant, --phase3-accuracy-only and "
+            "--phase4-accuracy-only and --phase4-paired-only are mutually exclusive"
+        )
 
     torch.npu.set_device(args.device)
     torch.npu.set_compile_mode(jit_compile=False)
@@ -749,6 +865,12 @@ def main() -> None:
         return
     if args.phase3_accuracy_only:
         run_phase3_accuracy(args, inputs)
+        return
+    if args.phase4_accuracy_only:
+        run_phase4_accuracy(args, inputs)
+        return
+    if args.phase4_paired_only:
+        run_phase4_paired(args, inputs)
         return
     kkt_solve_inputs = make_kkt_solve_inputs(inputs)
     legacy = run_legacy(inputs)

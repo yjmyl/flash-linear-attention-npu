@@ -95,6 +95,34 @@ aclnnStatus aclnnGdnCoreFwdPhase3(
     aclOpExecutor *executor,
     aclrtStream stream);
 
+/** Phase 4 checkpoint: fwd_h + fwd_o use ChunkGatedDeltaRuleFwdHO. */
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase4GetWorkspaceSize(
+    const aclTensor *q,
+    const aclTensor *k,
+    const aclTensor *v,
+    const aclTensor *g,
+    const aclTensor *beta,
+    const aclTensor *initialStateOptional,
+    bool outputFinalState,
+    int64_t chunkSize,
+    const aclIntArray *cuSeqlensOptional,
+    const aclIntArray *chunkIndicesOptional,
+    double scale,
+    const aclTensor *oOut,
+    const aclTensor *finalStateOutOptional,
+    const aclTensor *gCumsumOut,
+    const aclTensor *aOut,
+    uint64_t *workspaceSize,
+    aclOpExecutor **executor);
+
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase4(
+    void *workspace,
+    uint64_t workspaceSize,
+    aclOpExecutor *executor,
+    aclrtStream stream);
+
 #ifdef __cplusplus
 }
 #endif
