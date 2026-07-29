@@ -66,6 +66,29 @@ python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
   --output test_output/gdn_ablation/phase4_standalone.json
 ```
 
+Use `--all-phase-paired-only` for a direct Phase 0/1/2/3/4 comparison on one
+input in one process. Every measured round runs all five variants. The base
+order rotates so every variant occupies every position, then reverses after a
+complete rotation. Use warmup and iteration counts divisible by ten so the
+forward and reverse order cycles are balanced. This mode requires
+a Phase 4 implementation that is live for the selected contract; do not use an
+archived full-core-barrier artifact that is known to hang.
+
+For varlen evidence only, add `--all-phase-skip-phase1` when repeated execution
+of the historical Phase 1 variant reproduces its known device fault before the
+new candidate runs. This keeps Phase 0/2/3/4 on the same input and in one
+process; the forward/reverse order cycle is then eight rounds, so both warmup
+and iteration counts must be divisible by eight. Record the omitted historical
+variant explicitly rather than presenting the result as a five-variant matrix.
+
+```bash
+python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
+  --device 2 --dtype fp16 --batch 1 --key-heads 4 --value-heads 8 \
+  --tokens 1024 --chunk-size 64 --all-phase-paired-only \
+  --warmup 10 --iterations 50 \
+  --output test_output/gdn_ablation/all_phase_dense_fp16_c64.json
+```
+
 Phase 2 also adds the five-call `fused_kkt_solve` variant. It replaces only
 `chunk_scaled_dot_kkt -> solve_tri`; local cumsum, layout handling and the four
 following GDN stages stay unchanged. The first fused kernel accepts the

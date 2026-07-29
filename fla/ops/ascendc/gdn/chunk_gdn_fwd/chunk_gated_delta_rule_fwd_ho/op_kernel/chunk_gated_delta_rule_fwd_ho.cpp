@@ -14,7 +14,6 @@ namespace GDN {
 namespace {
 
 constexpr uint64_t TILING_ALIGNMENT = 8;
-
 __aicore__ inline uint64_t AlignTilingSize(uint64_t value)
 {
     return (value + TILING_ALIGNMENT - 1) / TILING_ALIGNMENT * TILING_ALIGNMENT;
@@ -26,7 +25,7 @@ __aicore__ inline void RunFwdH(GM_ADDR k, GM_ADDR w, GM_ADDR u, GM_ADDR g, GM_AD
                                GM_ADDR h, GM_ADDR vNew, GM_ADDR finalState, GM_ADDR tiling,
                                GM_ADDR userWorkspace)
 {
-    using Kernel = Catlass::Gemm::Kernel::GDNFwdHKernel<InputT, GT, StateT, float, TileShapes, kGated>;
+    using Kernel = Catlass::Gemm::Kernel::GDNFwdHKernel<InputT, GT, StateT, float, TileShapes, kGated, true>;
     Kernel kernel;
     kernel.Init(k, w, u, g, gk, initialState, cuSeqlens, chunkIndices, h, vNew, finalState,
                 tiling, userWorkspace);
@@ -149,7 +148,7 @@ __aicore__ inline void RunFwdO(GM_ADDR q, GM_ADDR k, GM_ADDR vNew, GM_ADDR h, GM
                                GM_ADDR cuSeqlens, GM_ADDR chunkIndices, GM_ADDR o,
                                GM_ADDR userWorkspace, const ChunkFwdOTilingData *tiling)
 {
-    using Kernel = Catlass::Gemm::Kernel::GDNFwdOKernel<InputT, GT, float>;
+    using Kernel = Catlass::Gemm::Kernel::GDNFwdOKernel<InputT, GT, float, true>;
     Kernel kernel;
     kernel.Init(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, tiling, userWorkspace);
     kernel.Process();
@@ -188,10 +187,8 @@ __aicore__ inline void RunFused(GM_ADDR q, GM_ADDR k, GM_ADDR w, GM_ADDR u, GM_A
             tiling + oTilingOffset + sizeof(ChunkFwdOTilingData));
     GM_ADDR h = userWorkspace + trailer->hIntermediateOffset;
     GM_ADDR vNew = userWorkspace + trailer->vNewIntermediateOffset;
-
     DispatchFwdH<TileShapes>(k, w, u, g, gk, initialState, cuSeqlens, chunkIndices,
                              h, vNew, finalState, tiling, userWorkspace);
-    AscendC::SyncAll<false>();
 
     ChunkFwdOTilingData oTiling{};
     CopyOTiling(gmOTiling, oTiling);

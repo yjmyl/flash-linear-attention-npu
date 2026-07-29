@@ -13,6 +13,7 @@
 #include "../../chunk_fwd_o_struct.h"
 
 constexpr uint32_t GDN_FWD_O_PING_PONG_STAGES = 2;
+constexpr uint32_t GDN_FWD_HO_CONSUMERS_PER_HEAD = 2;
 
 namespace Catlass::Gemm::Block {
 
@@ -55,6 +56,8 @@ struct BlockSchedulerGdnFwdO {
     uint32_t headGroups;
 
     bool isRunning;
+    bool chunkPipeline{false};
+    bool taskAffinity{false};
     bool processNewTask {true};
     bool firstLoop {true};
     bool lastLoop {false};
@@ -74,6 +77,11 @@ struct BlockSchedulerGdnFwdO {
     uint32_t tokenOffset;
     uint32_t batchChunks;
     uint32_t batchTokens;
+    uint32_t pipelineHeadIdx{0};
+    uint32_t pipelineLaneIdx{0};
+    uint32_t hTaskBatchCount{0};
+    uint32_t hTasksPerCore{1};
+    uint32_t hTaskStride{0};
 
     AscendC::GlobalTensor<int64_t> gmSeqlen;
     AscendC::GlobalTensor<int64_t> gmChunkOffsets;
@@ -88,7 +96,8 @@ struct BlockSchedulerGdnFwdO {
 
     CATLASS_DEVICE
     void Init(GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, const GDN::ChunkFwdOTilingData *tilingData,
-              uint32_t coreIdx, uint32_t coreNum) {
+              uint32_t coreIdx, uint32_t coreNum, bool enableChunkPipeline = false,
+              bool enableTaskAffinity = false) {
         shapeBatch = tilingData->shapeBatch;
         seqlen = tilingData->seqlen;
         kNumHead = tilingData->kNumHead;
@@ -115,26 +124,100 @@ struct BlockSchedulerGdnFwdO {
         vBlockSize = vHeadDim;
         taskNum = shapeBatch * numChunks * vNumHead;
         headGroups = vNumHead / kNumHead;
-        taskIdx = cubeCoreIdx * GDN_FWD_O_PING_PONG_STAGES;
-        isRunning = taskIdx < taskNum;
+        chunkPipeline = enableChunkPipeline;
+        taskAffinity = enableTaskAffinity;
+        if (chunkPipeline) {
+            const uint32_t consumerCoreBegin = vNumHead;
+            const uint32_t consumerCoreEnd = consumerCoreBegin +
+                                             vNumHead * GDN_FWD_HO_CONSUMERS_PER_HEAD;
+            if (cubeCoreIdx < consumerCoreBegin || cubeCoreIdx >= consumerCoreEnd) {
+                taskIdx = taskNum;
+                isRunning = false;
+            } else {
+                const uint32_t consumerIdx = cubeCoreIdx - consumerCoreBegin;
+                pipelineHeadIdx = consumerIdx / GDN_FWD_HO_CONSUMERS_PER_HEAD;
+                pipelineLaneIdx = consumerIdx % GDN_FWD_HO_CONSUMERS_PER_HEAD;
+                taskIdx = pipelineLaneIdx * vNumHead + pipelineHeadIdx;
+                isRunning = taskIdx < taskNum;
+            }
+        } else if (taskAffinity) {
+            if (isVariedLen) {
+                for (uint32_t sequence = 0; sequence < tokenBatch; ++sequence) {
+                    hTaskBatchCount += gmSeqlen.GetValue(sequence + 1) > gmSeqlen.GetValue(sequence);
+                }
+            } else {
+                hTaskBatchCount = shapeBatch;
+            }
+            const uint32_t hTaskNum = hTaskBatchCount * vNumHead;
+            hTasksPerCore = hTaskNum > cubeCoreNum ? GDN_FWD_O_PING_PONG_STAGES : 1;
+            hTaskStride = cubeCoreNum * hTasksPerCore;
+            taskIdx = 0;
+            isRunning = taskNum > 0 && hTaskStride > 0;
+        } else {
+            taskIdx = cubeCoreIdx * GDN_FWD_O_PING_PONG_STAGES;
+            isRunning = taskIdx < taskNum;
+        }
 
     }
 
     CATLASS_DEVICE
-    void InitTask() {
-        if (processNewTask) {
-            headInnerIdx = 0;
-            baseTaskIdx = taskIdx;
-        } else {
-            headInnerIdx = (headInnerIdx + 1) % GDN_FWD_O_PING_PONG_STAGES;
+    uint32_t GetCompactSequenceIdx(uint32_t rawSequenceIdx) const {
+        uint32_t compactSequenceIdx = 0;
+        for (uint32_t sequence = 0; sequence < rawSequenceIdx; ++sequence) {
+            compactSequenceIdx += gmSeqlen.GetValue(sequence + 1) > gmSeqlen.GetValue(sequence);
         }
+        return compactSequenceIdx;
+    }
 
-        uint32_t curTaskIdx = baseTaskIdx + headInnerIdx;
-        if (unlikely(curTaskIdx >= taskNum)) {
-            isRunning = false;
-            processNewTask = true;
-            currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
-            return;
+    CATLASS_DEVICE
+    bool IsTaskOwnedByCore(uint32_t candidateTaskIdx) const {
+        const uint32_t candidateBatchIdx = candidateTaskIdx / (numChunks * vNumHead);
+        const uint32_t candidateChunkIdx =
+            (candidateTaskIdx - candidateBatchIdx * numChunks * vNumHead) / vNumHead;
+        const uint32_t candidateHeadIdx = candidateTaskIdx % vNumHead;
+        const uint32_t hBatchIdx = isVariedLen
+                                       ? GetCompactSequenceIdx(gmChunkOffsets.GetValue(2 * candidateChunkIdx))
+                                       : candidateBatchIdx;
+        const uint32_t hTaskIdx = hBatchIdx * vNumHead + candidateHeadIdx;
+        const uint32_t producerCoreIdx = (hTaskIdx % hTaskStride) / hTasksPerCore;
+        return producerCoreIdx == cubeCoreIdx;
+    }
+
+    CATLASS_DEVICE
+    void InitTask() {
+        uint32_t curTaskIdx;
+        if (chunkPipeline) {
+            curTaskIdx = taskIdx;
+            if (unlikely(curTaskIdx >= taskNum)) {
+                isRunning = false;
+                currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
+                return;
+            }
+            taskIdx += GDN_FWD_HO_CONSUMERS_PER_HEAD * vNumHead;
+        } else if (taskAffinity) {
+            while (taskIdx < taskNum && !IsTaskOwnedByCore(taskIdx)) {
+                ++taskIdx;
+            }
+            if (unlikely(taskIdx >= taskNum)) {
+                isRunning = false;
+                currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
+                return;
+            }
+            curTaskIdx = taskIdx++;
+        } else {
+            if (processNewTask) {
+                headInnerIdx = 0;
+                baseTaskIdx = taskIdx;
+            } else {
+                headInnerIdx = (headInnerIdx + 1) % GDN_FWD_O_PING_PONG_STAGES;
+            }
+            curTaskIdx = baseTaskIdx + headInnerIdx;
+            if (unlikely(curTaskIdx >= taskNum)) {
+                isRunning = false;
+                processNewTask = true;
+                currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
+                return;
+            }
         }
 
         shapeBatchIdx = curTaskIdx / (numChunks * vNumHead);
@@ -173,9 +256,11 @@ struct BlockSchedulerGdnFwdO {
         offsets[currStage].headIdx = vHeadIdx;
         offsets[currStage].chunkIdx = chunkIdx;
 
-        processNewTask = headInnerIdx == GDN_FWD_O_PING_PONG_STAGES - 1;
-        if (processNewTask) {
-            taskIdx += GDN_FWD_O_PING_PONG_STAGES * cubeCoreNum;
+        if (!chunkPipeline && !taskAffinity) {
+            processNewTask = headInnerIdx == GDN_FWD_O_PING_PONG_STAGES - 1;
+            if (processNewTask) {
+                taskIdx += GDN_FWD_O_PING_PONG_STAGES * cubeCoreNum;
+            }
         }
 
         currStage = (currStage + 1) % GDN_FWD_O_PING_PONG_STAGES;
@@ -199,9 +284,10 @@ struct BlockSchedulerGdnFwdOCube : public BlockSchedulerGdnFwdO {
     BlockSchedulerGdnFwdOCube() {}
 
     CATLASS_DEVICE
-    void Init(GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, const GDN::ChunkFwdOTilingData *tilingData) {
+    void Init(GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, const GDN::ChunkFwdOTilingData *tilingData,
+              bool enableChunkPipeline = false, bool enableTaskAffinity = false) {
         BlockSchedulerGdnFwdO::Init(cu_seqlens, chunk_offsets, tilingData, AscendC::GetBlockIdx(),
-                                    AscendC::GetBlockNum());
+                                    AscendC::GetBlockNum(), enableChunkPipeline, enableTaskAffinity);
     }
 
     CATLASS_DEVICE
@@ -253,9 +339,11 @@ struct BlockSchedulerGdnFwdOVec : public BlockSchedulerGdnFwdO {
     BlockSchedulerGdnFwdOVec() {}
 
     CATLASS_DEVICE
-    void Init(GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, const GDN::ChunkFwdOTilingData *tilingData) {
+    void Init(GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, const GDN::ChunkFwdOTilingData *tilingData,
+              bool enableChunkPipeline = false, bool enableTaskAffinity = false) {
         BlockSchedulerGdnFwdO::Init(cu_seqlens, chunk_offsets, tilingData,
-                                    AscendC::GetBlockIdx() / AscendC::GetSubBlockNum(), AscendC::GetBlockNum());
+                                    AscendC::GetBlockIdx() / AscendC::GetSubBlockNum(), AscendC::GetBlockNum(),
+                                    enableChunkPipeline, enableTaskAffinity);
     }
 
     CATLASS_DEVICE

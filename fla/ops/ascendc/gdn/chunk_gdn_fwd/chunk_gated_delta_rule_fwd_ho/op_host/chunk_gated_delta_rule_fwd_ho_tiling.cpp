@@ -46,6 +46,11 @@ constexpr size_t TILING_ALIGNMENT = 8;
 constexpr size_t WORKSPACE_ALIGNMENT = 512;
 constexpr size_t WORKSPACE_RESERVE = 16 * 1024 * 1024;
 constexpr int64_t PING_PONG_STAGES = 2;
+constexpr int64_t HO_PIPELINE_VALUE_HEADS = 8;
+constexpr int64_t HO_PIPELINE_VALUE_DIM = 128;
+constexpr uint32_t HO_PIPELINE_CUBE_CORES = 24;
+constexpr size_t HO_PIPELINE_EVENT_COUNT = 2;
+constexpr size_t HO_PIPELINE_EVENT_BYTES_PER_CORE = 32;
 
 size_t AlignUp(size_t value, size_t alignment)
 {
@@ -266,6 +271,16 @@ ge::graphStatus Tiling4ChunkGatedDeltaRuleFwdHO(gert::TilingContext *context)
     trailer.vNewIntermediateOffset = static_cast<int64_t>(workspaceOffset);
     workspaceOffset += AlignUp(static_cast<size_t>(batch) * vNumHead * seqlen * vHeadDim * elementSize,
                                WORKSPACE_ALIGNMENT);
+    const bool enableChunkPipeline = !isVarlen && batch == 1 &&
+                                     vNumHead == HO_PIPELINE_VALUE_HEADS &&
+                                     vHeadDim == HO_PIPELINE_VALUE_DIM &&
+                                     (chunkSize == CHUNK_64 || chunkSize == CHUNK_128) &&
+                                     aicCoreNum == HO_PIPELINE_CUBE_CORES;
+    if (enableChunkPipeline) {
+        workspaceOffset += AlignUp(static_cast<size_t>(aicCoreNum) * PING_PONG_STAGES *
+                                       HO_PIPELINE_EVENT_COUNT * HO_PIPELINE_EVENT_BYTES_PER_CORE,
+                                   WORKSPACE_ALIGNMENT);
+    }
     workspaceOffset += WORKSPACE_RESERVE;
 
     const size_t hTilingSize = hTiling.GetDataSize();

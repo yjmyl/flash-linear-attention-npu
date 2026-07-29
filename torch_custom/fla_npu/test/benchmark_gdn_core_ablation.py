@@ -592,6 +592,93 @@ def measure_paired_latency(
     return result
 
 
+def balanced_variant_order(names: tuple[str, ...], iteration: int) -> tuple[str, ...]:
+    """Rotate every variant through every position, then repeat in reverse order."""
+    block = iteration // len(names)
+    base = names if block % 2 == 0 else tuple(reversed(names))
+    offset = iteration % len(names)
+    return base[offset:] + base[:offset]
+
+
+def measure_balanced_latency(
+    functions: dict[str, object],
+    inputs: dict,
+    warmup: int,
+    iterations: int,
+) -> dict:
+    names = tuple(functions)
+    samples = {name: [] for name in names}
+    clear_allocator_state()
+    for iteration in range(warmup):
+        for name in balanced_variant_order(names, iteration):
+            try:
+                run_synchronized(functions[name], inputs)
+            except Exception as error:
+                raise RuntimeError(
+                    f"balanced warmup failed at iteration={iteration}, variant={name}"
+                ) from error
+
+    for iteration in range(iterations):
+        for name in balanced_variant_order(names, iteration):
+            try:
+                start = torch.npu.Event(enable_timing=True)
+                end = torch.npu.Event(enable_timing=True)
+                start.record()
+                outputs = functions[name](inputs)
+                end.record()
+                end.synchronize()
+                samples[name].append(float(start.elapsed_time(end)))
+                del outputs
+                ascendc_runtime._RECENT_LAUNCH_STORAGE.clear()
+            except Exception as error:
+                raise RuntimeError(
+                    f"balanced measurement failed at iteration={iteration}, variant={name}"
+                ) from error
+
+    summaries = {name: latency_summary(samples[name]) for name in names}
+    baseline_name = names[0]
+    versus_baseline = {}
+    versus_previous = {}
+    for index, name in enumerate(names[1:], start=1):
+        baseline_pct = [
+            (current / baseline - 1.0) * 100.0
+            for baseline, current in zip(samples[baseline_name], samples[name])
+        ]
+        previous_name = names[index - 1]
+        previous_pct = [
+            (current / previous - 1.0) * 100.0
+            for previous, current in zip(samples[previous_name], samples[name])
+        ]
+        versus_baseline[name] = {
+            "median_change_pct": (
+                summaries[name]["median_ms"] / summaries[baseline_name]["median_ms"] - 1.0
+            ) * 100.0,
+            "roundwise_change_pct": percentage_summary(baseline_pct),
+        }
+        versus_previous[name] = {
+            "previous_variant": previous_name,
+            "median_change_pct": (
+                summaries[name]["median_ms"] / summaries[previous_name]["median_ms"] - 1.0
+            ) * 100.0,
+            "roundwise_change_pct": percentage_summary(previous_pct),
+        }
+
+    result = {
+        "method": "balanced_rotating_npu_events",
+        "order": (
+            "rotate all variants through every position; reverse the base order "
+            "after each complete rotation"
+        ),
+        "warmup_rounds": warmup,
+        "variant_order": names,
+        "results": summaries,
+        "versus_baseline": versus_baseline,
+        "versus_previous": versus_previous,
+    }
+    clear_allocator_state()
+    return result
+
+
 def trace_summary(trace_path: Path) -> dict:
     payload = json.loads(trace_path.read_text(encoding="utf-8"))
     events = payload.get("traceEvents", []) if isinstance(payload, dict) else payload
@@ -798,6 +885,91 @@ def run_phase4_paired(args, inputs: dict) -> None:
     print(json.dumps(report, indent=2))
 
 
+def run_all_phase_paired(args, inputs: dict) -> None:
+    functions = {
+        "legacy_six_aclnn": run_legacy,
+        "phase1_one_aclnn_six_kernels": run_composite_phase1,
+        "phase2_one_aclnn_fused_kkt_solve": run_composite_phase2,
+        "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
+        "phase4_one_aclnn_fused_fwd_ho": run_composite_phase4,
+    }
+    expected_calls = {
+        "legacy_six_aclnn": 6,
+        "phase1_one_aclnn_six_kernels": 1,
+        "phase2_one_aclnn_fused_kkt_solve": 1,
+        "phase3_one_aclnn_fused_cumsum_kkt": 1,
+        "phase4_one_aclnn_fused_fwd_ho": 1,
+    }
+    if args.all_phase_skip_phase1:
+        del functions["phase1_one_aclnn_six_kernels"]
+        del expected_calls["phase1_one_aclnn_six_kernels"]
+    order_cycle = 2 * len(functions)
+    if args.warmup % order_cycle or args.iterations % order_cycle:
+        raise ValueError(
+            "all-phase balanced measurement requires warmup and iterations "
+            f"to be divisible by the forward/reverse order cycle ({order_cycle})"
+        )
+
+    reference = run_legacy(inputs)
+    torch.npu.synchronize()
+    finiteness = {
+        "legacy_six_aclnn": standalone_finiteness(reference, inputs),
+    }
+    accuracy = {}
+    for name, function in functions.items():
+        if name != "legacy_six_aclnn":
+            outputs = function(inputs)
+            torch.npu.synchronize()
+            accuracy[name] = compare_results(reference, outputs, inputs)
+            finiteness[name] = standalone_finiteness(outputs, inputs)
+            del outputs
+            clear_allocator_state()
+    del reference
+    clear_allocator_state()
+
+    variants = {}
+    for name, function in functions.items():
+        variants[name] = measure_once(function, inputs)
+        if variants[name]["aclnn_call_count"] != expected_calls[name]:
+            raise AssertionError(
+                f"{name}: expected {expected_calls[name]} ACLNN calls, "
+                f"observed {variants[name]['aclnn_call_count']}"
+            )
+
+    failed_accuracy = {
+        name: result for name, result in accuracy.items() if not result["bit_exact"]
+    }
+    if failed_accuracy:
+        raise AssertionError(f"all-phase accuracy failed: {failed_accuracy}")
+    if not all(result["all_finite"] for result in finiteness.values()):
+        raise AssertionError(f"all-phase finiteness failed: {finiteness}")
+
+    balanced = measure_balanced_latency(
+        functions,
+        inputs,
+        args.warmup,
+        args.iterations,
+    )
+    report = {
+        "case_id": args.case_id,
+        "measurement": {
+            "method": "all_phase_balanced_rotating_npu_events",
+            "ascend_launch_blocking": os.environ.get("ASCEND_LAUNCH_BLOCKING"),
+            "warmup_rounds": args.warmup,
+            "iterations_per_variant": args.iterations,
+        },
+        "contract": contract_report(args, inputs),
+        "accuracy": accuracy,
+        "finiteness": finiteness,
+        "expected_aclnn_call_count": expected_calls,
+        "variants": variants,
+        "balanced_latency": balanced,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=int, default=int(os.environ.get("TEST_DEVICE_ID", 0)))
@@ -840,6 +1012,22 @@ def main() -> None:
         action="store_true",
         help="Measure only Phase 3 versus Phase 4 with alternating in-process NPU events.",
     )
+    parser.add_argument(
+        "--all-phase-paired-only",
+        action="store_true",
+        help=(
+            "Measure Phase 0 and immutable Phase 1/2/3/4 on one input with "
+            "balanced in-process NPU events."
+        ),
+    )
+    parser.add_argument(
+        "--all-phase-skip-phase1",
+        action="store_true",
+        help=(
+            "Exclude the historically unsafe repeated Phase 1 variant from an all-phase run. "
+            "This is intended only for varlen performance evidence."
+        ),
+    )
     parser.add_argument("--case-id", default="")
     parser.add_argument("--output", type=Path, default=Path("gdn_core_ablation.json"))
     args = parser.parse_args()
@@ -850,12 +1038,16 @@ def main() -> None:
         args.phase3_accuracy_only,
         args.phase4_accuracy_only,
         args.phase4_paired_only,
+        args.all_phase_paired_only,
     ))
     if selected_modes > 1:
         parser.error(
             "--paired-only, --standalone-variant, --phase3-accuracy-only and "
-            "--phase4-accuracy-only and --phase4-paired-only are mutually exclusive"
+            "--phase4-accuracy-only, --phase4-paired-only and "
+            "--all-phase-paired-only are mutually exclusive"
         )
+    if args.all_phase_skip_phase1 and not args.all_phase_paired_only:
+        parser.error("--all-phase-skip-phase1 requires --all-phase-paired-only")
 
     torch.npu.set_device(args.device)
     torch.npu.set_compile_mode(jit_compile=False)
@@ -871,6 +1063,9 @@ def main() -> None:
         return
     if args.phase4_paired_only:
         run_phase4_paired(args, inputs)
+        return
+    if args.all_phase_paired_only:
+        run_all_phase_paired(args, inputs)
         return
     kkt_solve_inputs = make_kkt_solve_inputs(inputs)
     legacy = run_legacy(inputs)
