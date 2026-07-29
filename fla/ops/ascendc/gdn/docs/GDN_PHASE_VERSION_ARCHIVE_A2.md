@@ -22,6 +22,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 2 | `gdn-a2-phase-archive` | `gdn-a2-phase2^{commit}` | 不可变代码快照；生产性能证据由后续 commit `2b8161d` 追加，不移动该 tag |
 | Phase 3 | `gdn-a2-phase-archive` | `gdn-a2-phase3^{commit}` = `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 不可变 annotated tag 已远端推送并逐 SHA 回查 |
 | Phase 4 | `gdn-a2-phase-archive` | `gdn-a2-phase4^{commit}` = `9719f2701f62ec7ef3d67751af52d1a1ea3c9435` | 不可变 annotated tag 已推送并完成远端逐 SHA 回查 |
+| Phase 4 流水 P1 | `gdn-a2-phase-archive` | `gdn-a2-phase4-pipeline-p1^{commit}` = `57c3ba03a3c15a797cedb9a712f02d3957de94f2` | Phase 4 后续性能 checkpoint；新 annotated tag 已推送并完成远端逐 SHA 回查 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -33,6 +34,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 2 | `aclnnGdnCoreFwdPhase2` / `gdn_core_fwd_phase2` | `local_cumsum -> ChunkKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已固化，并按冻结范围完成 A2 功能/精度/生产性能收口 |
 | Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
 | Phase 4 | `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | `ChunkCumsumKktSolveTri -> recompute_w_u -> ChunkGatedDeltaRuleFwdHO` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
+| Phase 4 流水 P1 | 沿用 `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | 同 Phase 4 融合边界；HO 换成无外层全核同步的 chunk-ready 流水/生产核亲和调度 | 已完成 A2 功能/精度/生产性能/workspace/profiler/安装和 Git 归档收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
@@ -125,3 +127,32 @@ Phase 4 实现与验收里程碑 commit 为 `9719f2701f62ec7ef3d67751af52d1a1ea3
 远端回查确认 `refs/tags/gdn-a2-phase4^{}` 为
 `9719f2701f62ec7ef3d67751af52d1a1ea3c9435`，归档分支包含该里程碑并只向前追加归档元数据；
 Phase 2/3 tag 也保持原 SHA，推送未使用 force。
+
+## 2026-07-29 Phase 4 流水 P1 收口
+
+- 保持 Phase 4 `(A+B+C) + D + (E+F)` 融合边界和版本化 ACLNN 不变；HO 的
+  dense C64/C128 换成 `H AIV -> IB -> O AIV -> 本地 O AIC` chunk-ready 流水，
+  其他 shape 换成生产核亲和调度，外层 `SyncAll<false>()` 全部移除。
+- clean 产物的 dense/varlen `8/8` + state `1/1` 对 Phase 3 bit-exact/有限，两个额外
+  压力点也通过；FP16/BF16 都包含 tiling key 1/2。
+- Phase 0/2/3/P1 以及 dense 可安全运行的 Phase 1 同进程平衡矩阵已完成。P1 相对
+  Phase 0 的 8 点改善为 `76.25%~80.74%`；相对 Phase 3 仅 3 点为正差且都小于
+  `1%`。profiler 证明 C64 和最差池化点 BF16/C128 的目标 fused kernel 均更快，
+  因此没有启动无瓶颈假设的优化轮次。
+- P1 workspace 为 `94,570,496~113,175,040 B`，对应 Phase 3
+  `130,229,760~152,240,640 B`，8 点全部下降。
+- clean run 包 SHA256 为
+  `5525c89fbf7563c34fa5375a666326448928b1b06dd8759de731291af9795c86`，
+  `libcust_opapi.so` 为
+  `8904e82de928a6a0eb137ddfcd457430cff85ef0679e3d052d4abc18e77f8fda`，opmaster 为
+  `771393f67bf931c47b2e20a9627b84fd2d5eae11c1d62525b207ffb716bbd47b`。
+- 从归档 tag commit 重打的完整 wheel SHA256 为
+  `f374213f88ae3fae73179543fc097cbb95c2ac1ed2a122146b473833681bc550`。wheel + run
+  安装后 Python/host/opmaster/HO 文件身份、8 个 Phase ACLNN 符号、`site-packages`
+  import、安装态 bit-exact 与正式 Example/ST forward/backward 精度均通过。
+
+P1 实现里程碑 commit 为 `57c3ba03a3c15a797cedb9a712f02d3957de94f2`，parent 为
+`52e793d163c0db1ce3d41c6392abc9c3c5408af8`。annotated tag
+`gdn-a2-phase4-pipeline-p1` object 为 `f0c7bb5876ccf9bbd4565a8ae47e72d1f5a4ce33`，peeled
+commit 为上述 P1 里程碑。远端回查确认归档分支与 tag 的 commit/tag object/peeled SHA
+分别一致，推送未使用 force，旧 `gdn-a2-phase2/3/4` tag 没有移动。
