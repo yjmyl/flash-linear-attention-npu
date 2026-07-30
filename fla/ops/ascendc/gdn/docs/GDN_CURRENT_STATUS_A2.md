@@ -25,7 +25,8 @@
 
 当前没有未收口的 Phase 2/3/4/P1 验收项。`gdn-a2-phase4` 保持不可变；
 P1 作为归档后的独立性能 checkpoint 使用新 tag，没有回写旧 tag，也没有修改
-Phase 1/2/3 历史路径。下一生产小步回到冻结路线的 `V=256` 规格闸门。
+Phase 1/2/3 历史路径。下一生产小步进入冻结 `V=128` 验收口径下的 Phase 5；
+`V=256` 目前只保留实现扩展口，不作为 Phase 5 的前置门槛。
 
 ## 2. 融合边界和性能口径
 
@@ -82,17 +83,20 @@ Phase 3 的共享 helper 局部微基准也是 `8/8` median 改善，但只用�
 
 上述已验收范围未宣称完成：`V=256`、原生 GVA、causal conv、RMSNorm/gate、backward、完整 Demo/模型性能，以及单 ACLNN 绝对 workspace `<=50 MB`。其中绝对 workspace 作为持续优化目标和报告项，不作为阻断融合路线的硬门槛；性能优先，若能在不伤害性能的前提下降低 workspace 则继续优化。
 
-已达成但尚未实施的后续顺序为：
+已达成但尚未实施的融合主线为：
 
 ```text
 Phase 4: (A+B+C) + D + (E+F)
-    -> 规格闸门: V=256，再原生 GVA
     -> Phase 5: (A+B+C) + (D+E+F)
     -> Phase 6: 仅在 profiler 支持时尝试 (A+B+C+D+E+F)
     -> Phase 7: transpose/layout
     -> Phase 8: causal_conv1d、RMSNorm/gate
     -> Phase 9: 完整 Demo/模型收口
 ```
+
+`V=256` 和原生 GVA 是独立的后续规格扩展：当前只保留 tiling/调度表达能力，
+不要求在进入 Phase 5 前完成全量精度和性能对齐；在产品计划要求正式声明支持时，
+再分别启动独立规格闸门，避免与融合改动同时进行。
 
 生产目标是最快且满足显存/精度的拓扑，不要求为了形式把 `ABC + DEF` 强制合成单 kernel。
 
@@ -254,7 +258,9 @@ Phase 4 启动卡已冻结：
 冻结 Phase 4 验收快照保持不变。P1 已补齐 key 1/2 完整产物、替换所有非流水
 shape 的全核同步 fallback，并完成 C128/varlen 正式矩阵和交付门禁。本 checkpoint
 没有同时修改 transpose、workspace 别名、`V=256`、原生 GVA 或数学路径。因此下一小步
-不再是补测 P1，而是单独启动 `V=256` 规格闸门。
+不再是补测 P1，也不提前验收后续规格，而是在冻结 `V=128` 口径下启动 Phase 5。
+`V=256` 仅保留扩展口；若 Phase 5 触及共享 tiling/调度代码，可做编译或单点 smoke 防止
+扩展口被意外破坏，但不在本阶段执行完整精度/性能矩阵。
 
 **P1 最终收口（2026-07-29）：** 工作树已实现活性安全替代路径：dense C64/C128
 使用分离 H 生产核和 O 消费核的 chunk-ready 流水，其余 shape 按 H 任务生产核
@@ -311,6 +317,7 @@ example 会在进入 GDN 前因当前 `triton-ascend` 与 CANN 9.1 runtime 枚�
 | `GDN_FUSION_PLAN_A2.md` | 稳定路线、Phase 边界、冻结启动/修正卡 | 只有路线或边界变更时 |
 | `GDN_FUSION_DEVELOPMENT_PLAYBOOK_A2.md` | 开发和验收方法 | 只有流程规则变更时 |
 | `GDN_PHASE2/3/4_ACCEPTANCE_A2.md` | 已关闭 Phase 的冻结验收快照 | 原则上不随日常进度更新；只修正事实或表述错误 |
+| `GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md` | Phase 4 流水 P1 的独立性能 checkpoint 验收快照 | P1 关闭时一次性生成；不覆盖 Phase 4 原始快照 |
 | `GDN_PHASE_VERSION_ARCHIVE_A2.md` | commit/tag/产物身份和归档规则 | 只在新里程碑或归档身份变化时 |
 | `docs/aclnn*.md` / `gdn_core_ablation.md` | API contract 和 benchmark 使用方法 | 只在接口、路径或测量方法变更时 |
 
@@ -321,6 +328,7 @@ example 会在进入 GDN 前因当前 `triton-ascend` 与 CANN 9.1 runtime 枚�
 - Phase 2 验收：`GDN_PHASE2_ACCEPTANCE_A2.md`
 - Phase 3 验收：`GDN_PHASE3_ACCEPTANCE_A2.md`
 - Phase 4 验收：`GDN_PHASE4_ACCEPTANCE_A2.md`
+- Phase 4 流水 P1 验收：`GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`
 - Phase 4 流水 P1 正式性能：`gdn-phase0-p1-safe-formal-summary-d7-r1/`
 - Phase 4 流水 P1 profiler：`gdn-phase4-p1-profiler-d7-r1/`
 - Phase 4 流水 P1 clean 构建/产物矩阵：`gdn-phase4-p1-clean-full-build-r2/`、

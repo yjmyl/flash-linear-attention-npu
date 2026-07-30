@@ -230,20 +230,21 @@ Phase 4 正式收口仍要求完整冻结矩阵相对 Phase 3 不回退，并同
 peak delta 和公开输出/state 精度；矩阵必须覆盖非空 initial/真实 final state、dense/varlen 元数据、
 尾块、FP16/BF16 与 C64/C128。不能仅凭中间张量理论字节数宣称收益。
 
-### Phase 4 后置规格闸门
+### Phase 4 后续规格扩展
 
-在继续吸收 `D` 之前，必须依次关闭两个规格缺口：
+`V=256` 和原生 GVA 是后续独立规格，不是 Phase 5 的前置门槛。当前 Phase 4/P1 只验收
+冻结的 `V=128` 口径，同时保留扩展所需的 tiling/调度表达能力：
 
 1. `K=128, V=256`；
 2. 原生 GVA，即物理 `Hk != Hv` 且 `Hv % Hk == 0`，不依赖外部复制 q/k。
 
-两个规格一次只引入一个变量，分别填写启动卡并使用版本化入口验收。若需要改变已验收 Phase 的
+两个规格在产品计划要求正式支持时一次只引入一个变量，分别填写启动卡并使用版本化入口验收。若需要改变已验收 Phase 的
 tiling、数据布局或性能行为，必须新增不可变 checkpoint，不能把规格扩展悄悄并入 Phase 4 或后续
 suffix 融合。Phase 4 首版虽只验收窄范围，但实现结构不得阻碍这两个闸门。
 
 ### Phase 5：在 E+F 上吸收 recompute_w_u
 
-规格闸门关闭后，Phase 5 的候选边界为：
+在冻结 `V=128` 验收口径下，Phase 5 的候选边界为：
 
 ```text
 (A+B+C) + (D+E+F)
@@ -437,8 +438,16 @@ branch 和远端逐 SHA 回查均已完成。`gdn-a2-phase3^{commit}` 固定为
   安装 host 库 SHA256 为 `6f67757282030b90f95f92f403beaf1a3bdeeee9cd52ccf9de87f58226c5a23d`；
 - 完整结果见 `GDN_PHASE4_ACCEPTANCE_A2.md`。
 
-Phase 4 归档后的下一路线步骤不是直接融合 `D`，而是依次关闭 `V=256` 和原生 GVA
-两个独立规格闸门；关闭后才能启动 Phase 5。
+截至 2026-07-29，Phase 4 流水 P1 在不改变上述融合边界的前提下完成独立 checkpoint：
+
+- dense/varlen `8/8` 加 state `1/1` 对 Phase 3 bit-exact/有限，额外压力点通过；
+- 8 点相对 Phase 3 的 median 变化为 `+0.94%/-0.88%/-1.63%/-2.14%/+0.45%/-0.34%/-1.81%/+0.20%`；
+- workspace 8 点全部下降 `24.11%~27.89%`，代表 profiler 目标段均更快；
+- 完整结果见 `GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`，P1 使用新 tag，Phase 4 原始快照不变。
+
+Phase 4/P1 归档后的下一路线步骤是在冻结 `V=128` 口径下启动 Phase 5，优先验证
+`D+E+F` 的融合收益。`V=256` 和原生 GVA 在产品计划要求时再分别启动独立规格闸门，
+不与 Phase 5 融合改动同时进行。
 
 ## 8. 相关文件
 
@@ -449,4 +458,5 @@ Phase 4 归档后的下一路线步骤不是直接融合 `D`，而是依次关�
 - GDN Python 入口：`examples/flash_gated_delta_rule.py`
 - Phase 2 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE2_ACCEPTANCE_A2.md`
 - Phase 3 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE3_ACCEPTANCE_A2.md`
+- Phase 4 流水 P1 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`
 - A2 GDN 融合开发手册：`fla/ops/ascendc/gdn/docs/GDN_FUSION_DEVELOPMENT_PLAYBOOK_A2.md`

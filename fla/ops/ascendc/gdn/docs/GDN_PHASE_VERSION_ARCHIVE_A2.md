@@ -37,6 +37,9 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 4 流水 P1 | 沿用 `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | 同 Phase 4 融合边界；HO 换成无外层全核同步的 chunk-ready 流水/生产核亲和调度 | 已完成 A2 功能/精度/生产性能/workspace/profiler/安装和 Git 归档收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
+Phase 4 原始冻结验收快照为 `GDN_PHASE4_ACCEPTANCE_A2.md`；流水 P1 使用独立快照
+`GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`，不覆盖原 Phase 4 报告，也不移动已有 tag。
+
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
 
 ## 代码与验证入口
