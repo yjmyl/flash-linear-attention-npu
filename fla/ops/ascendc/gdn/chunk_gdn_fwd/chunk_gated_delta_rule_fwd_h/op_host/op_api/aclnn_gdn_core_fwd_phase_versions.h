@@ -123,6 +123,34 @@ aclnnStatus aclnnGdnCoreFwdPhase4(
     aclOpExecutor *executor,
     aclrtStream stream);
 
+/** Phase 5: recompute_w_u and fused fwd_h/fwd_o share one kernel boundary. */
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase5GetWorkspaceSize(
+    const aclTensor *q,
+    const aclTensor *k,
+    const aclTensor *v,
+    const aclTensor *g,
+    const aclTensor *beta,
+    const aclTensor *initialStateOptional,
+    bool outputFinalState,
+    int64_t chunkSize,
+    const aclIntArray *cuSeqlensOptional,
+    const aclIntArray *chunkIndicesOptional,
+    double scale,
+    const aclTensor *oOut,
+    const aclTensor *finalStateOutOptional,
+    const aclTensor *gCumsumOut,
+    const aclTensor *aOut,
+    uint64_t *workspaceSize,
+    aclOpExecutor **executor);
+
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase5(
+    void *workspace,
+    uint64_t workspaceSize,
+    aclOpExecutor *executor,
+    aclrtStream stream);
+
 #ifdef __cplusplus
 }
 #endif

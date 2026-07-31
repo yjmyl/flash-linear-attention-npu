@@ -43,6 +43,7 @@ _ASCENDC_OPS = (
     "npu_gdn_core_fwd_phase2",
     "npu_gdn_core_fwd_phase3",
     "npu_gdn_core_fwd_phase4",
+    "npu_gdn_core_fwd_phase5",
     "npu_chunk_local_cumsum",
     "npu_chunk_scaled_dot_kkt",
     "npu_chunk_cumsum_kkt",

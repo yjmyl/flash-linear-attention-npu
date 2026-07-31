@@ -34,7 +34,8 @@ Permanent one-ACLNN checkpoints are named
 `phase1_one_aclnn_six_kernels` and
 `phase2_one_aclnn_fused_kkt_solve`, and
 `phase3_one_aclnn_fused_cumsum_kkt`, and
-`phase4_one_aclnn_fused_fwd_ho`. The Phase 3 variant name is retained for
+`phase4_one_aclnn_fused_fwd_ho`, and
+`phase5_one_aclnn_fused_recompute_wu_ho`. The Phase 3 variant name is retained for
 report compatibility, but its final route is cumulative
 `ChunkCumsumKktSolveTri` (`cumsum + KKT + solve_tri`), not the rejected split
 `ChunkCumsumKkt -> Cast -> SolveTri` candidate. The unversioned `composite_one_aclnn`
@@ -66,7 +67,13 @@ python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
   --output test_output/gdn_ablation/phase4_standalone.json
 ```
 
-Use `--all-phase-paired-only` for a direct Phase 0/1/2/3/4 comparison on one
+For Phase 5, use `--phase5-accuracy-only` or `--phase5-paired-only` to compare
+the accepted `D+E+F` fused checkpoint directly with immutable Phase 4. The
+paired mode uses the same alternating in-process NPU Event method. An
+independent profiler run can select
+`phase5_one_aclnn_fused_recompute_wu_ho` with `--standalone-variant`.
+
+Use `--all-phase-paired-only` for the archived direct Phase 0/1/2/3/4 comparison on one
 input in one process. Every measured round runs all five variants. The base
 order rotates so every variant occupies every position, then reverses after a
 complete rotation. Use warmup and iteration counts divisible by ten so the

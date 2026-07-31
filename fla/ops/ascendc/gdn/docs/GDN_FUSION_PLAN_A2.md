@@ -255,6 +255,25 @@ suffix 融合。Phase 4 首版虽只验收窄范围，但实现结构不得阻�
 统一 scheduler 后仍满足并行度、state 顺序、MIX 同步和 L1/UB 容量要求。Phase 5 从已验收 Phase 4
 和规格 checkpoint 线性追加，不为不同规格预设 `E+F` / `D+E+F` 生产路由分支。
 
+Phase 5 的第一小步是 P0 安全融合：新增版本化入口和 `D + (E+F)` fused kernel，保留 `w/u`
+GM hand-off，先验证 D 完成到 HO 消费之间的阶段同步；不把 P1 的 chunk-ready 流水、workspace
+别名、`IBSet/IBWait` 或 `ABC` 合并同时带入。P0 通过 smoke、精度和有限性后，才评估是否在同一
+边界内继续做流水优化。
+
+Phase 5 P0 checkpoint（2026-07-30）已通过：dense FP16/BF16 C64、dense FP16 C128、
+varlen FP16 C64、state FP16 C64 均与 Phase 4 bit-exact 且 finite；`T=128` 配对 median
+延迟下降约 4.7%~10.7%，workspace 同步下降约 19~20%，FP16/C64 profiler 任务数为
+`7 -> 6`。P1 preflight 进一步确认 fused suffix 为 `64.92 us`，Phase 4 对应 suffix
+为 `26.94 + 43.12 us`；当前 `w/u` 仍由 GM workspace 承载并在全核同步后供 H 消费。
+P1 随后按三轮规则完成单变量实验：Round1 移除外层冗余 barrier；Round2 将 Phase 5 的 D
+展平为 `chunk x value_head` 任务，5 个冻结合同全部 bit-exact/finite，目标 kernel 约改善
+`1.8%~2.1%`；Round3 尝试双 scratch 和移除 recompute 内部 barrier，虽然 kernel 更快，
+却在 BF16/C64 产生 `8.98e35` 量级输出误差，已拒绝并回退。Round2 的正式完整性能矩阵随后
+通过：相对 P0 为 `7/8` case 改善，矩阵 median `-0.581%`，唯一正差 `+0.264%` 判为噪声，
+workspace 逐 case 不变。因此 Round2 接受为 Phase 5 P1，不开启 Round4。
+后续局部 profiler 补测进一步确认，`(D+E+F)` 相对 Phase 4 的 `D+(E+F)`
+在 `T=128/1025` 的中位任务时间分别下降 `21.462%/6.142%`，融合边界本身的收益已被独立证明。
+
 ### Phase 6：条件性合并 ABC 与 DEF
 
 只有 profiler 证明剩余 A 重读、launch 和 workspace 生命周期值得继续时，才尝试：
@@ -445,9 +464,11 @@ branch 和远端逐 SHA 回查均已完成。`gdn-a2-phase3^{commit}` 固定为
 - workspace 8 点全部下降 `24.11%~27.89%`，代表 profiler 目标段均更快；
 - 完整结果见 `GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`，P1 使用新 tag，Phase 4 原始快照不变。
 
-Phase 4/P1 归档后的下一路线步骤是在冻结 `V=128` 口径下启动 Phase 5，优先验证
-`D+E+F` 的融合收益。`V=256` 和原生 GVA 在产品计划要求时再分别启动独立规格闸门，
-不与 Phase 5 融合改动同时进行。
+Phase 4/P1 归档后的 Phase 5 P0 已在冻结 `V=128` 口径下完成 `D+E+F` 安全融合验收。
+同一生产边界内的 P1 三轮优化也已结束：Round2 已通过功能、精度和完整性能矩阵并接受为
+Phase 5 P1，Round3 因 BF16 正确性失败已回退。当前下一小步是完成 Phase 5 Git/交付归档；
+归档后再按 profiler 证据决定是否启动 Phase 6。`V=256` 和原生 GVA 在产品计划要求时分别
+启动独立规格闸门，不与本轮 Phase 5 P1 混合进行。
 
 ## 8. 相关文件
 

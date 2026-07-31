@@ -10,6 +10,7 @@ Versioned entries preserve ablation checkpoints:
 | `aclnnGdnCoreFwdPhase2` | fused `ChunkKktSolveTri` plus the other four stage kernels |
 | `aclnnGdnCoreFwdPhase3` | cumulative `ChunkCumsumKktSolveTri` plus the remaining three stage kernels |
 | `aclnnGdnCoreFwdPhase4` | Phase 3 preprocessing plus fused `ChunkGatedDeltaRuleFwdHO` |
+| `aclnnGdnCoreFwdPhase5` | Phase 3 preprocessing plus fused `ChunkRecomputeWUFwdHO` |
 | `aclnnGdnCoreFwd` | compatibility alias, currently equivalent to Phase 2 |
 
 Phase 1 preserves:
@@ -25,7 +26,10 @@ Phase 3 additionally absorbs the raw-g local cumsum into
 same solved-A contract. Phase 4 preserves that preprocessing route and executes
 `fwd_h -> fwd_o` in one `ChunkGatedDeltaRuleFwdHO` MIX kernel; its internal
 `h` and `v_new` buffers live in the ACLNN workspace rather than as executor
-tensors. All fixed entries share the same public tensor contract and are
+tensors. Phase 5 additionally fuses `recompute_w_u -> fwd_h -> fwd_o` into one
+`ChunkRecomputeWUFwdHO` MIX kernel. Its accepted Round2 scheduler flattens the
+recompute work over `chunk x value_head`; `w/u/h/v_new` remain internal
+workspace hand-offs rather than public executor tensors. All fixed entries share the same public tensor contract and are
 exported by the same package so they can be compared without reinstalling a
 different wheel.
 
@@ -106,8 +110,9 @@ o, final_state, g_cumsum, a = gdn_core_fwd(
 )
 ```
 
-Use `gdn_core_fwd_phase1`, `gdn_core_fwd_phase2`, `gdn_core_fwd_phase3`, and
-`gdn_core_fwd_phase4` for permanent Phase A/B. Phase 4 is accepted for the
+Use `gdn_core_fwd_phase1`, `gdn_core_fwd_phase2`, `gdn_core_fwd_phase3`,
+`gdn_core_fwd_phase4`, and `gdn_core_fwd_phase5` for permanent Phase A/B.
+Phase 5 is accepted for the
 frozen A2 `K==V==128`, external-GVA scope; later specification gates must add
 new checkpoints instead of changing this path in place. The unversioned
 `gdn_core_fwd` is only the current default and remains equivalent to Phase 2

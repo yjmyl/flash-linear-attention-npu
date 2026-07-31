@@ -1,6 +1,6 @@
 # A2 GDN 当前状态
 
-> 最后更新：2026-07-29
+> 最后更新：2026-07-31
 >
 > 文档定位：**GDN A2 唯一可变进度源**。其他文档分别承载路线、开发规则、验收快照、版本归档或 API contract，不再重复播报当前进度。
 
@@ -25,8 +25,14 @@
 
 当前没有未收口的 Phase 2/3/4/P1 验收项。`gdn-a2-phase4` 保持不可变；
 P1 作为归档后的独立性能 checkpoint 使用新 tag，没有回写旧 tag，也没有修改
-Phase 1/2/3 历史路径。下一生产小步进入冻结 `V=128` 验收口径下的 Phase 5；
-`V=256` 目前只保留实现扩展口，不作为 Phase 5 的前置门槛。
+Phase 1/2/3 历史路径。**Phase 5 P1 Round2 已通过功能、精度和完整性能矩阵验收。** Round2
+相对 P0 的完整 core 增量在 `7/8` case 改善，矩阵 median 为 `-0.581%`，P90 矩阵 median
+为 `-1.298%`；唯一正差 dense FP16/C128 为 `+0.264%`，低于 1% 且目标 kernel 本体更快，
+判为噪声范围。Round2 相对 Phase 4 的完整 core `8/8` 改善 `0.615%~2.994%`；
+补充局部 profiler 中，融合后缀 `(D+E+F)` 相对 `D+(E+F)` 在 `T=128/1025`
+的中位任务时间分别下降 `21.462%/6.142%`。Round3 因 BF16 正确性失败已拒绝并回退。
+Phase 5 计算验收已收口，当前只剩 Git/交付归档；`V=256` 仍只保留实现扩展口，
+不作为 Phase 5 前置门槛。
 
 ## 2. 融合边界和性能口径
 
@@ -69,12 +75,14 @@ Phase 3: (A + B + C) + D + E + F
 | Phase 3 | `(A+B+C)+D+E+F` | 局部 `80/80 exact`，core dense/varlen `8/8` + state `1/1` bit-exact/有限 | 完整 core 相对 Phase 2 主判据 `8/8` median 改善，NPU kernel 数 `9 -> 8` | `gdn-a2-phase3` |
 | Phase 4 | `(A+B+C)+D+(E+F)` | core dense/varlen `8/8` + state `1/1` bit-exact/有限 | 完整 core `8/8` 无可复现实质回退，任务数 `8 -> 7`，workspace 全部下降 | `gdn-a2-phase4` |
 | Phase 4 流水 P1 | 同 Phase 4 融合边界，换成活性安全流水/亲和调度 | clean 产物 dense/varlen `8/8` + state `1/1` bit-exact/有限 | 8 点相对 Phase 0 改善 `76.25%~80.74%`；目标 kernel 更快，workspace 8/8 下降 | `gdn-a2-phase4-pipeline-p1` |
+| Phase 5 P0 | `(A+B+C)+(D+E+F)`，保留 `w/u` GM hand-off | 5 个冻结合同 bit-exact/有限 | `T=128` 三个配对点改善 `4.70%~10.71%`，任务数 `7 -> 6` | P0 已验收，尚未生成 Phase 5 tag |
+| Phase 5 P1 Round2 | 同 P0 边界，D 改为 `chunk x value_head` 展平调度 | 5 个冻结合同 bit-exact/有限 | 完整 core 相对 Phase 4 `8/8` 改善 `0.615%~2.994%`；相对 P0 `7/8` 改善，矩阵 median `-0.581%`；融合后缀局部下降 `6.142%~21.462%`；workspace 不变 | 已验收，Git/交付归档待完成 |
 
 Phase 3 的共享 helper 局部微基准也是 `8/8` median 改善，但只用于证明 `A+B` helper 有效，不代替上表中的完整 core 生产性能结论。
 
 ## 4. 当前范围边界
 
-已验收的 Phase 3/4/P1 共享以下范围边界：
+已验收的 Phase 3/4/5 P1 共享以下范围边界：
 
 - A2（Ascend 910B3）、`K==V==128`、head-first ND；
 - dense/varlen，FP16/BF16，`chunk_size=64/128`；
@@ -83,7 +91,7 @@ Phase 3 的共享 helper 局部微基准也是 `8/8` median 改善，但只用�
 
 上述已验收范围未宣称完成：`V=256`、原生 GVA、causal conv、RMSNorm/gate、backward、完整 Demo/模型性能，以及单 ACLNN 绝对 workspace `<=50 MB`。其中绝对 workspace 作为持续优化目标和报告项，不作为阻断融合路线的硬门槛；性能优先，若能在不伤害性能的前提下降低 workspace 则继续优化。
 
-已达成但尚未实施的融合主线为：
+当前融合主线为：
 
 ```text
 Phase 4: (A+B+C) + D + (E+F)
@@ -102,7 +110,7 @@ Phase 4: (A+B+C) + D + (E+F)
 
 后续默认只推进一条生产路线，不按 dtype、chunk、layout 或 shape 预设运行时分支。每个 Phase 的版本化 ACLNN 仅用于不可变 A/B 和归档，不代表生产入口需要同时维护多条规格路由。若冻结用例出现超出测量噪声的性能回退，或融合后没有获得预期收益，先在同一路线上最多做三轮有明确假设的单变量优化；三轮后仍无解，再携带基线差距、profiler 瓶颈、已尝试方案和预计工作量反馈决策，不自动新增分支。
 
-## 5. Phase 4 快照、流水 P0/P1 与下一小步
+## 5. Phase 4/5 执行快照
 
 Phase 4 启动卡已冻结：
 
@@ -257,10 +265,33 @@ Phase 4 启动卡已冻结：
 
 冻结 Phase 4 验收快照保持不变。P1 已补齐 key 1/2 完整产物、替换所有非流水
 shape 的全核同步 fallback，并完成 C128/varlen 正式矩阵和交付门禁。本 checkpoint
-没有同时修改 transpose、workspace 别名、`V=256`、原生 GVA 或数学路径。因此下一小步
-不再是补测 P1，也不提前验收后续规格，而是在冻结 `V=128` 口径下启动 Phase 5。
-`V=256` 仅保留扩展口；若 Phase 5 触及共享 tiling/调度代码，可做编译或单点 smoke 防止
-扩展口被意外破坏，但不在本阶段执行完整精度/性能矩阵。
+没有同时修改 transpose、workspace 别名、`V=256`、原生 GVA 或数学路径。Phase 5 P0
+已在冻结 `V=128` 口径下完成验收；P1 映射审计和三轮单变量优化也已执行，结果见 5.3。
+`V=256` 仅保留扩展口，不在本阶段执行完整精度/性能矩阵。
+
+## 5.1 Phase 5 启动卡：D + (E+F) P0
+
+Phase 5 已启动，基线为不可变 `gdn-a2-phase4-pipeline-p1` checkpoint；本阶段只吸收
+`recompute_w_u (D)` 到已经验收的 `ChunkGatedDeltaRuleFwdHO (E+F)`，整体目标为：
+
+```text
+(A+B+C) + D + (E+F)  ->  (A+B+C) + (D+E+F)
+```
+
+首个 P0 只验证安全的 GM hand-off，不同时做流水重排：
+
+- 新增独立的 Phase 5 版本化 ACLNN 和 fused kernel，Phase 1/2/3/4/P1 入口保持不变；
+- `w/u` 仍保留为内部 GM workspace，先不做 workspace 别名或片上直通；
+- D 完成到 E+F 消费之间先使用可证明、可诊断的阶段同步候选；不预设官方 `IBSet/IBWait`
+  在 A2 cube/AIV 路径上可用，先做最小同步实验；
+- 不修改 `ABC`、transpose/layout、`V=256`、原生 GVA、causal conv、RMSNorm/gate 或 backward；
+- 第一 smoke 固定为 dense FP16、`B=1,H=8,T=128,K=V=128,C=64`、无 state；首个生产 pilot
+  继续使用 dense FP16、`B=1,physical H=8,T=1025,K=V=128,C=64`。
+
+P0 成功标准：与 P1/Phase 3 的 `o/final_state/g_cumsum/A` bit-exact 或达到已批准 L1，
+全部 finite；目标 suffix kernel 数 `D + HO: 2 -> 1`，完整 core 目标 `7 -> 6`；性能不出现
+超出测量噪声的回退，并记录 workspace、peak 和 profiler。任一同步、精度或有限性失败立即
+停在 smoke，不进入完整矩阵，也不通过增加运行时规格分支绕过问题。
 
 **P1 最终收口（2026-07-29）：** 工作树已实现活性安全替代路径：dense C64/C128
 使用分离 H 生产核和 O 消费核的 chunk-ready 流水，其余 shape 按 H 任务生产核
@@ -309,6 +340,75 @@ bit-exact；正式 Example/ST `gdr_accuracy_varlen_64_64_h2_d128_fp16` 的
 example 会在进入 GDN 前因当前 `triton-ascend` 与 CANN 9.1 runtime 枚举名不兼容而失败；
 它属于 Phase 4 已冻结范围外的 Triton/L2Norm 环境门，不作为 P1 kernel 阻断项。
 
+## 5.2 Phase 5 P0 结果（2026-07-30）
+
+Phase 5 P0 的 `D + (E+F)` 安全融合已通过冻结合同验收。实现新增
+`aclnnGdnCoreFwdPhase5` 和 `ChunkRecomputeWUFwdHO`；Phase 1/2/3/4/P1 入口没有修改。
+P0 仍使用 `w/u` GM workspace hand-off，保留现有 Phase 4 HO 的稳定 H/O 调度路径；没有把
+`ABC`、transpose/layout、`V=256`、原生 GVA 或新的 IBSet/IBWait 方案带入本轮。
+
+精度和有限性结果：
+
+| 合同 | 结果 |
+| --- | --- |
+| dense FP16/C64 | PASS, output/A/g/final-state bit-exact, all finite |
+| dense BF16/C64 | PASS, output/A/g/final-state bit-exact, all finite |
+| dense FP16/C128 | PASS, output/A/g/final-state bit-exact, all finite |
+| varlen FP16/C64 | PASS, output/A/g/final-state bit-exact, all finite |
+| state FP16/C64 | PASS, output/A/g/final-state bit-exact, all finite |
+
+Phase 4 -> Phase 5 配对性能（三个合同均为 `T=128`；A2 device 2，warmup 5，20 rounds，median）：
+
+| 合同 | Phase 4 | Phase 5 | 变化 | workspace |
+| --- | ---: | ---: | ---: | ---: |
+| dense FP16/C64 | 1.04384 ms | 0.93200 ms | -10.71% | 91,497,472 -> 73,155,072 B |
+| dense BF16/C64 | 0.90285 ms | 0.86039 ms | -4.70% | 91,497,472 -> 73,155,072 B |
+| dense FP16/C128 | 1.30765 ms | 1.23015 ms | -5.93% | 97,540,608 -> 78,149,632 B |
+
+FP16/C64 profiler 确认设备任务数 `7 -> 6`，说明 suffix `D + HO` 已从两个设备任务变成
+一个 Phase 5 fused 任务；Phase 5 单 ACLNN 调用和全量输出均保持有限。
+
+证据位于 `.phase5_p0_accuracy_r2/` 和 `.phase5_p0_perf_r1/`，A2 原始日志在
+`/opt/chw/phase5_p0_*`。本轮还未生成 Phase 5 Git tag/归档 commit；归档身份留到 Phase 5
+整体收口时追加，不回写 Phase 4/P1 快照。
+
+P1 preflight 已完成：同一 FP16/C64 standalone trace 中，Phase 5 设备任务数为 `6`，
+`ChunkRecomputeWUFwdHO` fused suffix 为 `64.92 us`；Phase 4 对应的
+`RecomputeWUFwd + ChunkGatedDeltaRuleFwdHO` 为 `26.94 + 43.12 us`。当前 fused kernel
+仍通过 GM 写入 `w/u`，再经过全核同步供 H 消费；因此直接 hand-off 不是删掉一条同步语句，
+而是需要重新设计 producer/consumer 映射。该审计和后续三轮单变量实验已经完成，结果见 5.3。
+
+## 5.3 Phase 5 P1 三轮优化结果（2026-07-31）
+
+P1 沿同一 `D+E+F` 生产边界完成了三轮 profiler 驱动实验，没有增加 dtype、shape 或 layout
+运行时分支：
+
+| 轮次 | 单变量改动 | 功能/精度 | 性能结论 | 决策 |
+| --- | --- | --- | --- | --- |
+| Round1 | 移除 recompute D 完成到 H 开始之间的外层冗余 barrier | FP16/C64 smoke bit-exact/finite | fused suffix 有小幅 kernel 级改善，端到端无稳定收益 | 作为 Round2 基础保留 |
+| Round2 | 仅在 Phase 5 fused 路径把 D 的调度从“每 chunk 遍历全部 value head”改为 `chunk x value_head` 展平任务 | dense FP16/C64、BF16/C64、FP16/C128、varlen FP16/C64、state FP16/C64 共 `5/5` bit-exact/finite | 同卡 profiler：`T=128` 目标 kernel `56.42 -> 55.40 us`（约 `-1.81%`），`T=1025` 为 `163.84 -> 160.44 us`（约 `-2.08%`）；完整性能矩阵相对 P0 为 `7/8` 改善、median `-0.581%` | **P1 接受** |
+| Round3 | 为 recompute 两阶段使用独立 scratch，并移除内部全核 barrier 以尝试重叠 | FP16 smoke 通过，但 BF16/C64 首个扩展门禁失败；`output_max_abs=8.98e35` | 目标 kernel 比 Round2 更快，但正确性不成立 | **拒绝并完整回退** |
+
+Round3 失败只影响 `o`，`g_cumsum`、valid-A 和 final state 仍 exact，符合 recompute 内部阶段
+失序导致 H 消费错误 `w/u` 的特征；不能用更宽松精度阈值接收。当前工作树和 A2 repo 源码均已
+恢复为 Round2 语义，Round3 独立 vendor 仅保留失败证据。
+
+Round2 完整性能采用冻结 8 case，每个 case 在固定 device 上选择 3 组稳定的包级 AB/BA 轮次；
+每个包先在同一进程内以 200 个交替 NPU Event 样本对不可变 Phase 4 归一化，再比较
+`Round2/P0` 的比值。对观测到的双峰进程使用统一稳定性门槛
+`phase4_median/P90 >= 0.8 && phase5_median/P90 >= 0.8`，不合格的整个包级轮次废弃并补跑。
+最终使用 `8 cases x 3 rounds x 2 packages = 48` 份有效 JSON。
+
+8 case 的 Round2 相对 P0 median 依次为
+`-0.570%/-0.741%/+0.264%/-0.591%/-0.218%/-0.003%/-2.207%/-1.212%`；
+`7/8` 改善且 `7/8` 在三轮中至少两轮改善，矩阵 median `-0.581%`。P90 矩阵 median
+为 `-1.298%`。Round2 workspace 与 P0 逐 case 完全一致，范围为
+`74,746,368~82,169,856 B`。Round2 相对 Phase 4 的完整 core `8/8` 改善
+`0.615%~2.994%`；三轮局部 profiler 证明 `(D+E+F)` 相对 `D+(E+F)` 在
+`T=128/1025` 的中位任务时间分别下降 `21.462%/6.142%`。结合目标 kernel
+明确改善和唯一正差小于 1%，P1 Round2 通过性能门禁；不再开启 Round4。当前下一小步
+是完成 Phase 5 Git/交付归档。
+
 ## 6. 文档职责和更新规则
 
 | 文档 | 职责 | 何时更新 |
@@ -335,6 +435,9 @@ example 会在进入 GDN 前因当前 `triton-ascend` 与 CANN 9.1 runtime 枚�
   `gdn-phase4-p1-clean-artifact-matrix-d7-r1/`
 - Phase 4 流水 P1 Git wheel/安装回归：`gdn-phase4-p1-git-wheel-build-r5/`、
   `gdn-phase4-p1-git-install-regression-d7-r3/`
+- Phase 5 P0/P1 验收：`GDN_PHASE5_ACCEPTANCE_A2.md`
+- Phase 5 Round2 完整性能：`.phase5_p1_round2_full_perf_r1/summary.json`
+- Phase 5 Round2 融合后缀局部 profiler：`.phase5_p1_round2_suffix_profile_r2/summary.json`
 - 版本与 tag：`GDN_PHASE_VERSION_ARCHIVE_A2.md`
 - 总体路线：`GDN_FUSION_PLAN_A2.md`
 - 小步开发方法：`GDN_FUSION_DEVELOPMENT_PLAYBOOK_A2.md`
