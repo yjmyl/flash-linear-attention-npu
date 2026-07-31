@@ -466,8 +466,9 @@ branch 和远端逐 SHA 回查均已完成。`gdn-a2-phase3^{commit}` 固定为
 
 Phase 4/P1 归档后的 Phase 5 P0 已在冻结 `V=128` 口径下完成 `D+E+F` 安全融合验收。
 同一生产边界内的 P1 三轮优化也已结束：Round2 已通过功能、精度和完整性能矩阵并接受为
-Phase 5 P1，Round3 因 BF16 正确性失败已回退。当前下一小步是完成 Phase 5 Git/交付归档；
-归档后再按 profiler 证据决定是否启动 Phase 6。`V=256` 和原生 GVA 在产品计划要求时分别
+Phase 5 P1，Round3 因 BF16 正确性失败已回退。Phase 5 已以 `gdn-a2-phase5`
+完成 Git/交付归档。当前下一小步是 Phase 6 profiler 可行性闸门；只有剩余
+launch/GM 成本支持时，才启动 `ABC+DEF` 单 kernel 实现。`V=256` 和原生 GVA 在产品计划要求时分别
 启动独立规格闸门，不与本轮 Phase 5 P1 混合进行。
 
 ## 8. 相关文件

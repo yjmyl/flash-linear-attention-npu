@@ -2,7 +2,7 @@
 
 > 验收日期：2026-07-30
 > 范围：冻结 `V=128`、`K=128`，完成 `D + (E+F)` 融合及 Round2 调度优化
-> 状态：P0 与 P1 Round2 已验收；Git/交付归档待完成
+> 状态：P0 与 P1 Round2 已验收；Git 里程碑、tag 和交付归档已完成
 
 ## 1. 阶段边界
 
@@ -163,7 +163,11 @@ profiler 报告的输出均为有限值。这说明融合边界
 - clean 安装态最小回归在 A2 device 4 通过：dense FP16/C64 含 initial/final state
   和 dense BF16/C64 均与 Phase 4 bit-exact，且所有输出为有限值。BF16 用例专门覆盖了
   Round3 曾失败的正确性门禁。
+- Phase 5 实现里程碑 commit：`8208f69e4bf359c3989823490121eb19dadfa157`，parent：
+  `b2c69b6348bf1bc83fc5db56c2a15208d36fdf67`；annotated tag：`gdn-a2-phase5`，
+  tag object：`7585de6416c102d68e9a5461d7bb31a84a6e4a66`。远端逐 SHA 回查确认 tag peeled
+  commit 为上述里程碑，归档分支仅快进，Phase 2/3/4/P1 旧 tag 均未移动。
 
-Phase 5 P1 在 Round2 收口验收。剩余工作是完成 Phase 5 Git 里程碑/tag 与交付归档；P0 作为
-不可变证据保留，不作为最终选定源码状态。`V=256`、原生 GVA、transpose 和 `ABC` 仍属于后续
-独立门禁。
+Phase 5 P1 在 Round2 收口验收并完成 Git/交付归档。P0 作为不可变证据保留，
+不作为最终选定源码状态。下一步是 Phase 6 profiler 可行性闸门；`V=256`、
+原生 GVA、transpose 和更外层算子仍属于后续独立门禁。

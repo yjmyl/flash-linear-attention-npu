@@ -31,8 +31,10 @@ Phase 1/2/3 历史路径。**Phase 5 P1 Round2 已通过功能、精度和完整
 判为噪声范围。Round2 相对 Phase 4 的完整 core `8/8` 改善 `0.615%~2.994%`；
 补充局部 profiler 中，融合后缀 `(D+E+F)` 相对 `D+(E+F)` 在 `T=128/1025`
 的中位任务时间分别下降 `21.462%/6.142%`。Round3 因 BF16 正确性失败已拒绝并回退。
-Phase 5 计算验收已收口，当前只剩 Git/交付归档；`V=256` 仍只保留实现扩展口，
-不作为 Phase 5 前置门槛。
+Phase 5 已完成 Git/交付归档，里程碑 commit 为
+`8208f69e4bf359c3989823490121eb19dadfa157`，tag 为 `gdn-a2-phase5`。当前下一小步是
+Phase 6 可行性闸门：先用 profiler 量化 `ABC` 与 `DEF` 之间的剩余 launch/GM 成本，
+只在证据支持时启动单 kernel 实现。`V=256` 仍只保留实现扩展口，不是 Phase 6 前置门槛。
 
 ## 2. 融合边界和性能口径
 
@@ -75,8 +77,8 @@ Phase 3: (A + B + C) + D + E + F
 | Phase 3 | `(A+B+C)+D+E+F` | 局部 `80/80 exact`，core dense/varlen `8/8` + state `1/1` bit-exact/有限 | 完整 core 相对 Phase 2 主判据 `8/8` median 改善，NPU kernel 数 `9 -> 8` | `gdn-a2-phase3` |
 | Phase 4 | `(A+B+C)+D+(E+F)` | core dense/varlen `8/8` + state `1/1` bit-exact/有限 | 完整 core `8/8` 无可复现实质回退，任务数 `8 -> 7`，workspace 全部下降 | `gdn-a2-phase4` |
 | Phase 4 流水 P1 | 同 Phase 4 融合边界，换成活性安全流水/亲和调度 | clean 产物 dense/varlen `8/8` + state `1/1` bit-exact/有限 | 8 点相对 Phase 0 改善 `76.25%~80.74%`；目标 kernel 更快，workspace 8/8 下降 | `gdn-a2-phase4-pipeline-p1` |
-| Phase 5 P0 | `(A+B+C)+(D+E+F)`，保留 `w/u` GM hand-off | 5 个冻结合同 bit-exact/有限 | `T=128` 三个配对点改善 `4.70%~10.71%`，任务数 `7 -> 6` | P0 已验收，尚未生成 Phase 5 tag |
-| Phase 5 P1 Round2 | 同 P0 边界，D 改为 `chunk x value_head` 展平调度 | 5 个冻结合同 bit-exact/有限 | 完整 core 相对 Phase 4 `8/8` 改善 `0.615%~2.994%`；相对 P0 `7/8` 改善，矩阵 median `-0.581%`；融合后缀局部下降 `6.142%~21.462%`；workspace 不变 | 已验收，Git/交付归档待完成 |
+| Phase 5 P0 | `(A+B+C)+(D+E+F)`，保留 `w/u` GM hand-off | 5 个冻结合同 bit-exact/有限 | `T=128` 三个配对点改善 `4.70%~10.71%`，任务数 `7 -> 6` | P0 是 Phase 5 内部已验收 checkpoint，不单独打 tag |
+| Phase 5 P1 Round2 | 同 P0 边界，D 改为 `chunk x value_head` 展平调度 | 5 个冻结合同 bit-exact/有限 | 完整 core 相对 Phase 4 `8/8` 改善 `0.615%~2.994%`；相对 P0 `7/8` 改善，矩阵 median `-0.581%`；融合后缀局部下降 `6.142%~21.462%`；workspace 不变 | `gdn-a2-phase5` 已验收并归档 |
 
 Phase 3 的共享 helper 局部微基准也是 `8/8` median 改善，但只用于证明 `A+B` helper 有效，不代替上表中的完整 core 生产性能结论。
 
@@ -406,8 +408,8 @@ Round2 完整性能采用冻结 8 case，每个 case 在固定 device 上选择 
 `74,746,368~82,169,856 B`。Round2 相对 Phase 4 的完整 core `8/8` 改善
 `0.615%~2.994%`；三轮局部 profiler 证明 `(D+E+F)` 相对 `D+(E+F)` 在
 `T=128/1025` 的中位任务时间分别下降 `21.462%/6.142%`。结合目标 kernel
-明确改善和唯一正差小于 1%，P1 Round2 通过性能门禁；不再开启 Round4。当前下一小步
-是完成 Phase 5 Git/交付归档。
+明确改善和唯一正差小于 1%，P1 Round2 通过性能门禁；不再开启 Round4。Phase 5
+已以 `gdn-a2-phase5` 完成 Git/交付归档；当前下一小步是 Phase 6 profiler 可行性闸门。
 
 ## 6. 文档职责和更新规则
 

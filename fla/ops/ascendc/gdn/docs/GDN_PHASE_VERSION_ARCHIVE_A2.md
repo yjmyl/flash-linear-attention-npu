@@ -23,6 +23,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 3 | `gdn-a2-phase-archive` | `gdn-a2-phase3^{commit}` = `7fb8f05b59ab56a8392e0f6c9bef071714894826` | 不可变 annotated tag 已远端推送并逐 SHA 回查 |
 | Phase 4 | `gdn-a2-phase-archive` | `gdn-a2-phase4^{commit}` = `9719f2701f62ec7ef3d67751af52d1a1ea3c9435` | 不可变 annotated tag 已推送并完成远端逐 SHA 回查 |
 | Phase 4 流水 P1 | `gdn-a2-phase-archive` | `gdn-a2-phase4-pipeline-p1^{commit}` = `57c3ba03a3c15a797cedb9a712f02d3957de94f2` | Phase 4 后续性能 checkpoint；新 annotated tag 已推送并完成远端逐 SHA 回查 |
+| Phase 5 P1 Round2 | `gdn-a2-phase-archive` | `gdn-a2-phase5^{commit}` = `8208f69e4bf359c3989823490121eb19dadfa157` | `D+E+F` 融合与 Round2 展平调度的最终源码快照；不可变 annotated tag 已推送并完成远端逐 SHA 回查 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -35,10 +36,13 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 3 | `aclnnGdnCoreFwdPhase3` / `gdn_core_fwd_phase3` | `ChunkCumsumKktSolveTri -> recompute_w_u -> fwd_h -> fwd_o` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
 | Phase 4 | `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | `ChunkCumsumKktSolveTri -> recompute_w_u -> ChunkGatedDeltaRuleFwdHO` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
 | Phase 4 流水 P1 | 沿用 `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | 同 Phase 4 融合边界；HO 换成无外层全核同步的 chunk-ready 流水/生产核亲和调度 | 已完成 A2 功能/精度/生产性能/workspace/profiler/安装和 Git 归档收口 |
+| Phase 5 P1 Round2 | `aclnnGdnCoreFwdPhase5` / `gdn_core_fwd_phase5` | `ChunkCumsumKktSolveTri -> ChunkRecomputeWUFwdHO`；融合后缀的 D 采用 `chunk x value_head` 展平调度 | 已完成 A2 功能/精度/生产性能/workspace/profiler/clean 安装回归和 Git 归档收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 4 原始冻结验收快照为 `GDN_PHASE4_ACCEPTANCE_A2.md`；流水 P1 使用独立快照
 `GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`，不覆盖原 Phase 4 报告，也不移动已有 tag。
+Phase 5 P0/P1 使用 `GDN_PHASE5_ACCEPTANCE_A2.md`；P0 作为 Phase 5 内部证据，
+最终 `gdn-a2-phase5` 固化 P1 Round2 源码状态。
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
 
@@ -57,6 +61,7 @@ phase1_one_aclnn_six_kernels
 phase2_one_aclnn_fused_kkt_solve
 phase3_one_aclnn_fused_cumsum_kkt
 phase4_one_aclnn_fused_fwd_ho
+phase5_one_aclnn_fused_recompute_wu_ho
 ```
 
 Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径是累积单 kernel
@@ -159,3 +164,33 @@ P1 实现里程碑 commit 为 `57c3ba03a3c15a797cedb9a712f02d3957de94f2`，paren
 `gdn-a2-phase4-pipeline-p1` object 为 `f0c7bb5876ccf9bbd4565a8ae47e72d1f5a4ce33`，peeled
 commit 为上述 P1 里程碑。远端回查确认归档分支与 tag 的 commit/tag object/peeled SHA
 分别一致，推送未使用 force，旧 `gdn-a2-phase2/3/4` tag 没有移动。
+
+## 2026-07-31 Phase 5 P1 Round2 收口
+
+- 最终边界为 `(A+B+C) + (D+E+F)`；`ChunkRecomputeWUFwdHO` 将
+  `recompute_w_u -> fwd_h -> fwd_o` 收敛为一个 MIX kernel，P1 Round2 将 D 展平为
+  `chunk x value_head` 任务，不增加 dtype、shape 或 layout 运行时分支。
+- 五个冻结精度合同对 Phase 4 bit-exact/有限；Round3 因 BF16/C64 正确性失败已拒绝，
+  最终源码已回退到 Round2。
+- Round2 相对 Phase 4 完整 core `8/8` 用例改善 `0.615%~2.994%`；相对 P0
+  `7/8` 用例改善，矩阵 median 为 `-0.581%`。独立局部 profiler 中，`(D+E+F)`
+  相对 `D+(E+F)` 在 `T=128/1025` 的中位任务时间分别下降
+  `21.462%/6.142%`。
+- Phase 5 workspace 为 `74,746,368~82,169,856 B`；Round2 与 P0 逐 case 相同，
+  没有为追求绝对 workspace 目标牺牲性能或引入规格分支。
+- 归档前从不可变 Phase 4 P1 基线叠加精确 staged patch 完成 clean build；
+  ABI 单测 `11/11`（含 5 个 subtest）通过，Phase 1~5 与默认入口共 12 个 ACLNN
+  符号齐全，新融合算子的 `.o/.json` 各 8 份。FP16/C64 state 和 BF16/C64
+  clean 安装态 smoke 均 bit-exact/有限。
+- clean run 包 SHA256 为
+  `f1d915bbb03b69b489f5e9ffd1391f1e8bae9a2f26a7ef55206986875ca445b5`，
+  `libcust_opmaster_rt2.0.so` 为
+  `3c8cae5b9f61a42ac8935a84a0f87a90f111cc25b3913156cc29669a12a0fdde`，
+  安装态 `libcust_opapi.so` 为
+  `bf9f7d9d0165a551d838c2d4da54c2fb9320a7fee06131289e02fb97ddce8601`。
+
+Phase 5 实现里程碑 commit 为 `8208f69e4bf359c3989823490121eb19dadfa157`，parent 为
+`b2c69b6348bf1bc83fc5db56c2a15208d36fdf67`。annotated tag `gdn-a2-phase5` object 为
+`7585de6416c102d68e9a5461d7bb31a84a6e4a66`，peeled commit 为上述里程碑。远端回查
+确认归档分支和 Phase 5 tag 指向正确，旧 `gdn-a2-phase2/3/4`、
+`gdn-a2-phase4-pipeline-p1` tag 均保持原 SHA，推送未使用 force。
