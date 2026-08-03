@@ -1,4 +1,6 @@
+#ifndef GDN_CHUNK_CUMSUM_KKT_SOLVE_IMPL_ONLY
 #include "chunk_cumsum_kkt_solve_tri_tiling_key.h"
+#endif
 #include "chunk_kkt_cube.h"
 #include "chunk_scaled_dot_kkt.h"
 #include "solve_tri_cube.h"
@@ -10,10 +12,10 @@ namespace {
 constexpr uint64_t SCORE_READY_FLAG = 2;
 constexpr uint64_t KKT_READY_FLAG = 3;
 
-template <typename T, int MATRIX_SIZE>
+template <typename T, int MATRIX_SIZE, typename TilingData>
 __aicore__ inline void RunSolvePhase(GM_ADDR a, GM_ADDR cuSeqlens, GM_ADDR chunkIndices,
                                      GM_ADDR out, GM_ADDR workspace,
-                                     const ChunkKktSolveTriTilingData *tilingData)
+                                     const TilingData *tilingData)
 {
     if ASCEND_IS_AIC {
         CrossCoreWaitFlag(KKT_READY_FLAG);
@@ -32,6 +34,7 @@ __aicore__ inline void RunSolvePhase(GM_ADDR a, GM_ADDR cuSeqlens, GM_ADDR chunk
 }
 }  // namespace
 
+#ifndef GDN_CHUNK_CUMSUM_KKT_SOLVE_IMPL_ONLY
 template <uint32_t D_T_K, uint32_t CHUNK_KEY>
 __global__ __aicore__ void chunk_cumsum_kkt_solve_tri(GM_ADDR k,
                                                        GM_ADDR g,
@@ -81,3 +84,4 @@ __global__ __aicore__ void chunk_cumsum_kkt_solve_tri(GM_ADDR k,
         RunSolvePhase<DTYPE_K, 128>(aWorkspace, cuSeqlens, chunkIndices, A, solveWorkspace, &tilingData);
     }
 }
+#endif

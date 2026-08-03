@@ -30,6 +30,7 @@ STANDALONE_VARIANTS = (
     "phase3_one_aclnn_fused_cumsum_kkt",
     "phase4_one_aclnn_fused_fwd_ho",
     "phase5_one_aclnn_fused_recompute_wu_ho",
+    "phase6_one_aclnn_fused_core",
 )
 
 
@@ -282,6 +283,10 @@ def run_composite_phase4(inputs: dict):
 
 def run_composite_phase5(inputs: dict):
     return run_composite_with(ascendc.gdn_core_fwd_phase5, inputs)
+
+
+def run_composite_phase6(inputs: dict):
+    return run_composite_with(ascendc.gdn_core_fwd_phase6, inputs)
 
 
 def tensor_finiteness(tensor: torch.Tensor | None) -> dict:
@@ -755,6 +760,7 @@ def run_standalone(args, inputs: dict) -> None:
         "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
         "phase4_one_aclnn_fused_fwd_ho": run_composite_phase4,
         "phase5_one_aclnn_fused_recompute_wu_ho": run_composite_phase5,
+        "phase6_one_aclnn_fused_core": run_composite_phase6,
     }
     function = functions[args.standalone_variant]
     outputs = function(inputs)
@@ -869,6 +875,31 @@ def run_phase5_accuracy(args, inputs: dict) -> None:
     print(json.dumps(report, indent=2))
 
 
+def run_phase6_accuracy(args, inputs: dict) -> None:
+    phase5 = run_composite_phase5(inputs)
+    phase6 = run_composite_phase6(inputs)
+    torch.npu.synchronize()
+    comparison = compare_results(phase5, phase6, inputs)
+    finiteness = {
+        "phase5_one_aclnn_fused_recompute_wu_ho": standalone_finiteness(phase5, inputs),
+        "phase6_one_aclnn_fused_core": standalone_finiteness(phase6, inputs),
+    }
+    if not comparison["bit_exact"]:
+        raise AssertionError(f"Phase 6 P0a is not bit exact with Phase 5: {comparison}")
+    if not all(item["all_finite"] for item in finiteness.values()):
+        raise AssertionError(f"Phase 5/6 produced non-finite output/state: {finiteness}")
+    report = {
+        "case_id": args.case_id,
+        "measurement": {"method": "phase5_phase6_p0a_accuracy_only"},
+        "contract": contract_report(args, inputs),
+        "accuracy": {"phase6_vs_phase5": comparison},
+        "finiteness": finiteness,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
 def run_phase4_paired(args, inputs: dict) -> None:
     functions = {
         "phase3_one_aclnn_fused_cumsum_kkt": run_composite_phase3,
@@ -951,6 +982,53 @@ def run_phase5_paired(args, inputs: dict) -> None:
         "case_id": args.case_id,
         "measurement": {
             "method": "phase4_phase5_paired_alternating_npu_events",
+            "ascend_launch_blocking": os.environ.get("ASCEND_LAUNCH_BLOCKING"),
+        },
+        "contract": contract_report(args, inputs),
+        "finiteness": finiteness,
+        "variants": workspaces,
+        "paired_latency": paired,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
+def run_phase6_paired(args, inputs: dict) -> None:
+    functions = {
+        "phase5_one_aclnn_fused_recompute_wu_ho": run_composite_phase5,
+        "phase6_one_aclnn_fused_core": run_composite_phase6,
+    }
+    finiteness = {}
+    workspaces = {}
+    for name, function in functions.items():
+        outputs = function(inputs)
+        torch.npu.synchronize()
+        finiteness[name] = standalone_finiteness(outputs, inputs)
+        del outputs
+        clear_allocator_state()
+        workspaces[name] = measure_once(function, inputs)
+        if workspaces[name]["aclnn_call_count"] != 1:
+            raise AssertionError(
+                f"{name}: expected 1 ACLNN call, "
+                f"observed {workspaces[name]['aclnn_call_count']}"
+            )
+    if not all(item["all_finite"] for item in finiteness.values()):
+        raise AssertionError(f"Phase 5/6 produced non-finite output/state: {finiteness}")
+
+    paired = measure_paired_latency(
+        "phase5_one_aclnn_fused_recompute_wu_ho",
+        run_composite_phase5,
+        "phase6_one_aclnn_fused_core",
+        run_composite_phase6,
+        inputs,
+        args.warmup,
+        args.iterations,
+    )
+    report = {
+        "case_id": args.case_id,
+        "measurement": {
+            "method": "phase5_phase6_paired_alternating_npu_events",
             "ascend_launch_blocking": os.environ.get("ASCEND_LAUNCH_BLOCKING"),
         },
         "contract": contract_report(args, inputs),
@@ -1091,6 +1169,11 @@ def main() -> None:
         help="Compare only the Phase 4 checkpoint and the Phase 5 D+(E+F) pilot.",
     )
     parser.add_argument(
+        "--phase6-accuracy-only",
+        action="store_true",
+        help="Compare only the Phase 5 checkpoint and the restricted Phase 6 P0a pilot.",
+    )
+    parser.add_argument(
         "--phase4-paired-only",
         action="store_true",
         help="Measure only Phase 3 versus Phase 4 with alternating in-process NPU events.",
@@ -1099,6 +1182,11 @@ def main() -> None:
         "--phase5-paired-only",
         action="store_true",
         help="Measure only Phase 4 versus Phase 5 with alternating in-process NPU events.",
+    )
+    parser.add_argument(
+        "--phase6-paired-only",
+        action="store_true",
+        help="Measure only Phase 5 versus Phase 6 with alternating in-process NPU events.",
     )
     parser.add_argument(
         "--all-phase-paired-only",
@@ -1126,8 +1214,10 @@ def main() -> None:
         args.phase3_accuracy_only,
         args.phase4_accuracy_only,
         args.phase5_accuracy_only,
+        args.phase6_accuracy_only,
         args.phase4_paired_only,
         args.phase5_paired_only,
+        args.phase6_paired_only,
         args.all_phase_paired_only,
     ))
     if selected_modes > 1:
@@ -1152,11 +1242,17 @@ def main() -> None:
     if args.phase5_accuracy_only:
         run_phase5_accuracy(args, inputs)
         return
+    if args.phase6_accuracy_only:
+        run_phase6_accuracy(args, inputs)
+        return
     if args.phase4_paired_only:
         run_phase4_paired(args, inputs)
         return
     if args.phase5_paired_only:
         run_phase5_paired(args, inputs)
+        return
+    if args.phase6_paired_only:
+        run_phase6_paired(args, inputs)
         return
     if args.all_phase_paired_only:
         run_all_phase_paired(args, inputs)

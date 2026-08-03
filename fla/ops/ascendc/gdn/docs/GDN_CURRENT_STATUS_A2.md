@@ -1,6 +1,6 @@
 # A2 GDN 当前状态
 
-> 最后更新：2026-07-31
+> 最后更新：2026-08-03
 >
 > 文档定位：**GDN A2 唯一可变进度源**。其他文档分别承载路线、开发规则、验收快照、版本归档或 API contract，不再重复播报当前进度。
 
@@ -32,9 +32,35 @@ Phase 1/2/3 历史路径。**Phase 5 P1 Round2 已通过功能、精度和完整
 补充局部 profiler 中，融合后缀 `(D+E+F)` 相对 `D+(E+F)` 在 `T=128/1025`
 的中位任务时间分别下降 `21.462%/6.142%`。Round3 因 BF16 正确性失败已拒绝并回退。
 Phase 5 已完成 Git/交付归档，里程碑 commit 为
-`8208f69e4bf359c3989823490121eb19dadfa157`，tag 为 `gdn-a2-phase5`。当前下一小步是
-Phase 6 可行性闸门：先用 profiler 量化 `ABC` 与 `DEF` 之间的剩余 launch/GM 成本，
-只在证据支持时启动单 kernel 实现。`V=256` 仍只保留实现扩展口，不是 Phase 6 前置门槛。
+`8208f69e4bf359c3989823490121eb19dadfa157`，tag 为 `gdn-a2-phase5`。
+
+**Phase 6 P0 已通过验收。** 新增版本化 `aclnnGdnCoreFwdPhase6` 和单个
+`ChunkGdnCoreFwd` MIX kernel，一次 launch 完成 `ABC+DEF`，并由 owner AIV 在 UB 内
+完成公开 `g_cumsum` 的 BHT->BTH 整行写回。最终实现没有保留 ABC/DEF 边界全核同步；
+recompute 在 `kAbcTaskOrder=true` 时沿用 ABC 的连续核内 task 分片，由同一 AIC 生产和
+消费自己的 `A` tile。
+
+冻结的 dense FP16/C64 `T=128/1025` 无 state 与 state 四个合同均对 Phase 5 bit-exact、
+最大绝对误差 `0` 且全部有限。最终包 profiler 证明完整 ACLNN 设备任务数 `6 -> 4`，
+目标段 `ABC + public transpose + DEF` 从 `102.262 us` 收敛为 `84.162 us`。正式同进程
+配对性能每个规格三个独立进程、每进程 `20 warmup + 200 iterations`：短点三轮全部改善，
+中位收益 `3.023%`；长点三轮全部改善，中位收益 `2.413%`。workspace 分别增加
+`1.66%/5.23%`，按“性能优先、workspace 非硬门槛”接受为 P0 结果。详细证据见
+[`GDN_PHASE6_ACCEPTANCE_A2.md`](GDN_PHASE6_ACCEPTANCE_A2.md)。
+
+**Phase 6 已完成完整验收闭环。** dense 和 varlen 的 FP16/BF16 x C64/C128 均对 Phase 5
+bit-exact、`output_max_abs=0` 且全部有限；varlen `initial + final state` 主合同 `4/4` 和
+两个 state 边界合同也已关闭。A2 device 2 正式同进程 AB/BA 性能矩阵的八个 identity 全部改善，
+矩阵 pairwise median 为 `-2.733%`；最终包 profiler 复验设备任务数 `6 -> 4`。
+
+全新 clean 源树的两次 `git diff --check`、源/wheel ABI（均 `11 passed, 6 subtests passed`）、
+run 包隔离安装、wheel 隔离安装、wheel runtime varlen smoke 和 Demo composite `2/2 PASS` 都已通过。
+最终安装态 `ChunkGdnCoreFwd` 为 `4 .o + 4 .json`。详细矩阵、workspace 与产物身份见
+[`GDN_PHASE6_ACCEPTANCE_A2.md`](GDN_PHASE6_ACCEPTANCE_A2.md)。
+
+**Phase 6 已完成 Git/交付归档。** 新增里程碑 commit 和不可变 annotated tag
+`gdn-a2-phase6`；默认生产入口仍保持 Phase 2，未因归档自动切换。`V=256`、原生 GVA 和更外层
+算子仍是独立后续规格，不反向扩大本 Phase 范围。
 
 ## 2. 融合边界和性能口径
 
@@ -79,6 +105,7 @@ Phase 3: (A + B + C) + D + E + F
 | Phase 4 流水 P1 | 同 Phase 4 融合边界，换成活性安全流水/亲和调度 | clean 产物 dense/varlen `8/8` + state `1/1` bit-exact/有限 | 8 点相对 Phase 0 改善 `76.25%~80.74%`；目标 kernel 更快，workspace 8/8 下降 | `gdn-a2-phase4-pipeline-p1` |
 | Phase 5 P0 | `(A+B+C)+(D+E+F)`，保留 `w/u` GM hand-off | 5 个冻结合同 bit-exact/有限 | `T=128` 三个配对点改善 `4.70%~10.71%`，任务数 `7 -> 6` | P0 是 Phase 5 内部已验收 checkpoint，不单独打 tag |
 | Phase 5 P1 Round2 | 同 P0 边界，D 改为 `chunk x value_head` 展平调度 | 5 个冻结合同 bit-exact/有限 | 完整 core 相对 Phase 4 `8/8` 改善 `0.615%~2.994%`；相对 P0 `7/8` 改善，矩阵 median `-0.581%`；融合后缀局部下降 `6.142%~21.462%`；workspace 不变 | `gdn-a2-phase5` 已验收并归档 |
+| Phase 6（已归档） | `(A+B+C+D+E+F)`，内置公开 `g_cumsum` BHT->BTH 写回 | dense/varlen FP16/BF16 x C64/C128、state 主合同 `4/4` 与边界 `2/2` 均 bit-exact/有限 | 完整 ACLNN 任务数 `6 -> 4`；同进程 AB/BA 八 identity 全改善，矩阵 pairwise median `-2.733%`；workspace 逐 case 上升但按性能优先接受 | clean 包、隔离 wheel 和示例回归均已通过；`gdn-a2-phase6` 已创建，默认入口保持 Phase 2 |
 
 Phase 3 的共享 helper 局部微基准也是 `8/8` median 改善，但只用于证明 `A+B` helper 有效，不代替上表中的完整 core 生产性能结论。
 
@@ -98,7 +125,7 @@ Phase 3 的共享 helper 局部微基准也是 `8/8` median 改善，但只用�
 ```text
 Phase 4: (A+B+C) + D + (E+F)
     -> Phase 5: (A+B+C) + (D+E+F)
-    -> Phase 6: 仅在 profiler 支持时尝试 (A+B+C+D+E+F)
+    -> Phase 6: 已归档 (A+B+C+D+E+F)
     -> Phase 7: transpose/layout
     -> Phase 8: causal_conv1d、RMSNorm/gate
     -> Phase 9: 完整 Demo/模型收口
@@ -409,7 +436,9 @@ Round2 完整性能采用冻结 8 case，每个 case 在固定 device 上选择 
 `0.615%~2.994%`；三轮局部 profiler 证明 `(D+E+F)` 相对 `D+(E+F)` 在
 `T=128/1025` 的中位任务时间分别下降 `21.462%/6.142%`。结合目标 kernel
 明确改善和唯一正差小于 1%，P1 Round2 通过性能门禁；不再开启 Round4。Phase 5
-已以 `gdn-a2-phase5` 完成 Git/交付归档；当前下一小步是 Phase 6 profiler 可行性闸门。
+已以 `gdn-a2-phase5` 完成 Git/交付归档。Phase 6 随后完成 owner 完整行写回、
+ABC/recompute 同核连续 task 分片、dense/varlen/state 全合同、正式性能矩阵与 clean wheel
+交付回归；Phase 6 已完成 Git/交付归档，默认生产入口保持不变。
 
 ## 6. 文档职责和更新规则
 
@@ -418,7 +447,7 @@ Round2 完整性能采用冻结 8 case，每个 case 在固定 device 上选择 
 | `GDN_CURRENT_STATUS_A2.md` | **唯一当前进度源**：当前 Phase、本次结论、下一小步、当前 blocker | 每个有效小步后；Phase 关闭时压缩成快照，不累积实验日志 |
 | `GDN_FUSION_PLAN_A2.md` | 稳定路线、Phase 边界、冻结启动/修正卡 | 只有路线或边界变更时 |
 | `GDN_FUSION_DEVELOPMENT_PLAYBOOK_A2.md` | 开发和验收方法 | 只有流程规则变更时 |
-| `GDN_PHASE2/3/4_ACCEPTANCE_A2.md` | 已关闭 Phase 的冻结验收快照 | 原则上不随日常进度更新；只修正事实或表述错误 |
+| `GDN_PHASE2/3/4/5/6_ACCEPTANCE_A2.md` | 已关闭 Phase 或阶段性 P0 的冻结验收快照 | 原则上不随日常进度更新；只修正事实或表述错误 |
 | `GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md` | Phase 4 流水 P1 的独立性能 checkpoint 验收快照 | P1 关闭时一次性生成；不覆盖 Phase 4 原始快照 |
 | `GDN_PHASE_VERSION_ARCHIVE_A2.md` | commit/tag/产物身份和归档规则 | 只在新里程碑或归档身份变化时 |
 | `docs/aclnn*.md` / `gdn_core_ablation.md` | API contract 和 benchmark 使用方法 | 只在接口、路径或测量方法变更时 |

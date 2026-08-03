@@ -194,7 +194,8 @@ __aicore__ inline void RunFwdO(GM_ADDR q, GM_ADDR k, GM_ADDR vNew, GM_ADDR h, GM
     kernel.Process();
 }
 
-template <typename kType, typename betaType, int VDim, typename TileShapes>
+template <typename kType, typename betaType, int VDim, typename TileShapes,
+          bool kAbcTaskOrder = false>
 __aicore__ inline void RunRecompute(
     GM_ADDR k, GM_ADDR v, GM_ADDR beta, GM_ADDR A, GM_ADDR g, GM_ADDR cuSeqlens,
     GM_ADDR chunkIndices, GM_ADDR w, GM_ADDR u, GM_ADDR workspace,
@@ -202,21 +203,21 @@ __aicore__ inline void RunRecompute(
 {
     if ASCEND_IS_AIC {
         RecomputeWUFwdProcess<kType, betaType, typename TileShapes::L1TileShape,
-                              typename TileShapes::L0TileShape, true>
+                              typename TileShapes::L0TileShape, true, kAbcTaskOrder>
             process(k, v, beta, A, g, cuSeqlens, chunkIndices, w, u, workspace);
         process.Init(*tiling);
         process.Process();
     }
     if ASCEND_IS_AIV {
         AscendC::TPipe pipe;
-        RecomputeWUFwdVectorProcess<kType, betaType, true> process(
+        RecomputeWUFwdVectorProcess<kType, betaType, true, kAbcTaskOrder> process(
             k, v, beta, A, g, cuSeqlens, chunkIndices, w, u, workspace);
         process.Init(*tiling, &pipe);
         process.Process();
     }
 }
 
-template <typename kType, typename betaType, int VDim>
+template <typename kType, typename betaType, int VDim, bool kAbcTaskOrder = false>
 __aicore__ inline void DispatchRecompute(
     GM_ADDR k, GM_ADDR v, GM_ADDR beta, GM_ADDR A, GM_ADDR g, GM_ADDR cuSeqlens,
     GM_ADDR chunkIndices, GM_ADDR w, GM_ADDR u, GM_ADDR workspace,
@@ -224,11 +225,11 @@ __aicore__ inline void DispatchRecompute(
 {
     if constexpr (VDim == 256) {
         RunRecompute<kType, betaType, VDim,
-                     GDN::RecomputeWUFwdTileShapes256<kType, betaType>>(
+                     GDN::RecomputeWUFwdTileShapes256<kType, betaType>, kAbcTaskOrder>(
             k, v, beta, A, g, cuSeqlens, chunkIndices, w, u, workspace, tiling);
     } else {
         RunRecompute<kType, betaType, VDim,
-                     GDN::RecomputeWUFwdTileShapes128<kType, betaType>>(
+                     GDN::RecomputeWUFwdTileShapes128<kType, betaType>, kAbcTaskOrder>(
             k, v, beta, A, g, cuSeqlens, chunkIndices, w, u, workspace, tiling);
     }
 }
@@ -304,6 +305,7 @@ __aicore__ inline void RunFused(
 } // namespace
 } // namespace GDN
 
+#ifndef GDN_CHUNK_RECOMPUTE_WU_FWD_HO_IMPL_ONLY
 extern "C" __global__ __aicore__ void chunk_recompute_wu_fwd_ho(
     GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR beta, GM_ADDR A, GM_ADDR g, GM_ADDR gk,
     GM_ADDR initial_state, GM_ADDR cu_seqlens, GM_ADDR chunk_indices,
@@ -325,3 +327,4 @@ extern "C" __global__ __aicore__ void chunk_recompute_wu_fwd_ho(
             o, final_state, workspace, tiling);
     }
 }
+#endif

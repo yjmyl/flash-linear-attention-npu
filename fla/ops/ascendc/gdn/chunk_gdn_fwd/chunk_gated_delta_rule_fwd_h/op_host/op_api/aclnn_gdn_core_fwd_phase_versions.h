@@ -151,6 +151,34 @@ aclnnStatus aclnnGdnCoreFwdPhase5(
     aclOpExecutor *executor,
     aclrtStream stream);
 
+/** Phase 6 P0a: ABC + DEF and public BTH g_cumsum use one kernel boundary. */
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase6GetWorkspaceSize(
+    const aclTensor *q,
+    const aclTensor *k,
+    const aclTensor *v,
+    const aclTensor *g,
+    const aclTensor *beta,
+    const aclTensor *initialStateOptional,
+    bool outputFinalState,
+    int64_t chunkSize,
+    const aclIntArray *cuSeqlensOptional,
+    const aclIntArray *chunkIndicesOptional,
+    double scale,
+    const aclTensor *oOut,
+    const aclTensor *finalStateOutOptional,
+    const aclTensor *gCumsumOut,
+    const aclTensor *aOut,
+    uint64_t *workspaceSize,
+    aclOpExecutor **executor);
+
+__attribute__((visibility("default")))
+aclnnStatus aclnnGdnCoreFwdPhase6(
+    void *workspace,
+    uint64_t workspaceSize,
+    aclOpExecutor *executor,
+    aclrtStream stream);
+
 #ifdef __cplusplus
 }
 #endif

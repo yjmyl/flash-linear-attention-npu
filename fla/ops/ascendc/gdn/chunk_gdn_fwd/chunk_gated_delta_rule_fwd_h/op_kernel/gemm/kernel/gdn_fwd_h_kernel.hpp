@@ -633,6 +633,14 @@ public:
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID3 + pongBaseEvent);
 
         }
+        if constexpr (kChunkPipeline) {
+            // The dense fused path publishes individual chunks through IBSet/IBWait.
+            // Varlen currently uses producer affinity without that handshake, so close
+            // H globally before the following O stage consumes h/vNew.
+            if (isVariedLen) {
+                AscendC::SyncAll<false>();
+            }
+        }
     }
 
 };

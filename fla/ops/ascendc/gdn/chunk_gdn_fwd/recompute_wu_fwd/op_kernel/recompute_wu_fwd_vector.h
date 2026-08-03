@@ -22,7 +22,8 @@ using namespace AscendC;
 
 using GDN::RecomputeWUFwdTilingData;
 
-template <typename kType, typename betaType, bool kFlattenHeadTasks = false>
+template <typename kType, typename betaType, bool kFlattenHeadTasks = false,
+          bool kAbcTaskOrder = false>
 class RecomputeWUFwdVectorProcess {
 public:
     /** @brief constructor */
@@ -84,17 +85,18 @@ private:
 
 };
 
-template <typename kType, typename betaType, bool kFlattenHeadTasks>
+template <typename kType, typename betaType, bool kFlattenHeadTasks, bool kAbcTaskOrder>
 __aicore__ inline RecomputeWUFwdVectorProcess<kType, betaType,
-                                               kFlattenHeadTasks>::RecomputeWUFwdVectorProcess(
+                                               kFlattenHeadTasks, kAbcTaskOrder>::RecomputeWUFwdVectorProcess(
     GM_ADDR k_, GM_ADDR v_, GM_ADDR beta_, GM_ADDR A_, GM_ADDR g_,
     GM_ADDR cu_seqlens_, GM_ADDR chunk_indices_, GM_ADDR w_, GM_ADDR u_,
     GM_ADDR workspace_)
     : k(k_), v(v_), beta(beta_), A(A_), g(g_), cu_seqlens(cu_seqlens_),
       chunk_indices(chunk_indices_), w(w_), u(u_), workspace(workspace_){};
 
-template <typename kType, typename betaType, bool kFlattenHeadTasks>
-__aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType, kFlattenHeadTasks>::Init(
+template <typename kType, typename betaType, bool kFlattenHeadTasks, bool kAbcTaskOrder>
+__aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType, kFlattenHeadTasks,
+                                                   kAbcTaskOrder>::Init(
     const RecomputeWUFwdTilingData &tiling, AscendC::TPipe *pipe_)
 {
     pipe = pipe_;
@@ -118,8 +120,9 @@ __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType, kFlattenHead
     return;
 }
 
-template <typename kType, typename betaType, bool kFlattenHeadTasks>
-__aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType, kFlattenHeadTasks>::Process()
+template <typename kType, typename betaType, bool kFlattenHeadTasks, bool kAbcTaskOrder>
+__aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType, kFlattenHeadTasks,
+                                                   kAbcTaskOrder>::Process()
 {
     //计算K * Beta[:None]
     ProcessVb();
@@ -130,9 +133,9 @@ __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType, kFlattenHead
 }
 
 
-template <typename kType, typename betaType, bool kFlattenHeadTasks>
+template <typename kType, typename betaType, bool kFlattenHeadTasks, bool kAbcTaskOrder>
 __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType,
-                                                    kFlattenHeadTasks>::ProcessVb()
+                                                    kFlattenHeadTasks, kAbcTaskOrder>::ProcessVb()
 {
     uint32_t coreLoops = kFlattenHeadTasks ? chunkNum * Hv : chunkNum;
     uint32_t coreIdx = GetBlockIdx() / GetSubBlockNum();
@@ -158,10 +161,23 @@ __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType,
     auto tensorBetaFP32 = betaFp32Buf.Get<float32_t>();
     auto tensorBetaBrcbFP32 = betaFp32BrcbBuf.Get<float32_t>();
     
-    for (uint32_t loopIdx = coreIdx; loopIdx < coreLoops; loopIdx += coreNumAic) {
-        uint32_t chunkIdx = kFlattenHeadTasks ? loopIdx / Hv : loopIdx;
-        uint32_t hBegin = kFlattenHeadTasks ? loopIdx % Hv : 0;
-        uint32_t hEnd = kFlattenHeadTasks ? hBegin + 1 : Hv;
+    uint32_t loopBegin = coreIdx;
+    uint32_t loopEnd = coreLoops;
+    uint32_t loopStep = coreNumAic;
+    if constexpr (kAbcTaskOrder) {
+        // Phase 6 ABC assigns a contiguous task range to each AIC. Keep the
+        // recompute consumer on the same core so A is locally produced first.
+        const uint32_t tasksPerCore = (coreLoops + coreNumAic - 1) / coreNumAic;
+        loopBegin = coreIdx * tasksPerCore;
+        loopEnd = (loopBegin + tasksPerCore) < coreLoops ? loopBegin + tasksPerCore : coreLoops;
+        loopStep = 1;
+    }
+    for (uint32_t loopIdx = loopBegin; loopIdx < loopEnd; loopIdx += loopStep) {
+        uint32_t chunkIdx = 0;
+        uint32_t hBegin = 0;
+        uint32_t hEnd = 0;
+        DecodeRecomputeTask<kFlattenHeadTasks, kAbcTaskOrder>(
+            loopIdx, cu_seqlens, Hv, T, chunkSize, chunkNum, chunkIdx, hBegin, hEnd);
         GetChunkOffset(cu_seqlens, chunk_indices, B, Hv, T, chunkSize, chunkIdx, bos, eos);
         uint32_t curChunkSize = eos - bos;
         for (uint32_t h = hBegin; h < hEnd; ++h) {
@@ -232,9 +248,9 @@ __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType,
     return;
 }
 
-template <typename kType, typename betaType, bool kFlattenHeadTasks>
+template <typename kType, typename betaType, bool kFlattenHeadTasks, bool kAbcTaskOrder>
 __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType,
-                                                    kFlattenHeadTasks>::ProcessKbgExp()
+                                                    kFlattenHeadTasks, kAbcTaskOrder>::ProcessKbgExp()
 {
     uint32_t coreLoops = kFlattenHeadTasks ? chunkNum * Hv : chunkNum;
     uint32_t coreIdx = GetBlockIdx() / GetSubBlockNum();
@@ -261,10 +277,21 @@ __aicore__ void inline RecomputeWUFwdVectorProcess<kType, betaType,
     auto tensorBetaFP32 = betaFp32Buf.Get<float32_t>();
     auto tensorBetaBrcbFP32 = betaFp32BrcbBuf.Get<float32_t>();
     
-    for (uint32_t loopIdx = coreIdx; loopIdx < coreLoops; loopIdx += coreNumAic) {
-        uint32_t chunkIdx = kFlattenHeadTasks ? loopIdx / Hv : loopIdx;
-        uint32_t hBegin = kFlattenHeadTasks ? loopIdx % Hv : 0;
-        uint32_t hEnd = kFlattenHeadTasks ? hBegin + 1 : Hv;
+    uint32_t loopBegin = coreIdx;
+    uint32_t loopEnd = coreLoops;
+    uint32_t loopStep = coreNumAic;
+    if constexpr (kAbcTaskOrder) {
+        const uint32_t tasksPerCore = (coreLoops + coreNumAic - 1) / coreNumAic;
+        loopBegin = coreIdx * tasksPerCore;
+        loopEnd = (loopBegin + tasksPerCore) < coreLoops ? loopBegin + tasksPerCore : coreLoops;
+        loopStep = 1;
+    }
+    for (uint32_t loopIdx = loopBegin; loopIdx < loopEnd; loopIdx += loopStep) {
+        uint32_t chunkIdx = 0;
+        uint32_t hBegin = 0;
+        uint32_t hEnd = 0;
+        DecodeRecomputeTask<kFlattenHeadTasks, kAbcTaskOrder>(
+            loopIdx, cu_seqlens, Hv, T, chunkSize, chunkNum, chunkIdx, hBegin, hEnd);
         GetChunkOffset(cu_seqlens, chunk_indices, B, Hv, T, chunkSize, chunkIdx, bos, eos);
         uint32_t curChunkSize = eos - bos;
         for (uint32_t h = hBegin; h < hEnd; ++h) {

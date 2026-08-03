@@ -24,6 +24,7 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 4 | `gdn-a2-phase-archive` | `gdn-a2-phase4^{commit}` = `9719f2701f62ec7ef3d67751af52d1a1ea3c9435` | 不可变 annotated tag 已推送并完成远端逐 SHA 回查 |
 | Phase 4 流水 P1 | `gdn-a2-phase-archive` | `gdn-a2-phase4-pipeline-p1^{commit}` = `57c3ba03a3c15a797cedb9a712f02d3957de94f2` | Phase 4 后续性能 checkpoint；新 annotated tag 已推送并完成远端逐 SHA 回查 |
 | Phase 5 P1 Round2 | `gdn-a2-phase-archive` | `gdn-a2-phase5^{commit}` = `8208f69e4bf359c3989823490121eb19dadfa157` | `D+E+F` 融合与 Round2 展平调度的最终源码快照；不可变 annotated tag 已推送并完成远端逐 SHA 回查 |
+| Phase 6 | `gdn-a2-phase-archive` | `gdn-a2-phase6^{commit}` | `ABC+DEF` 单 MIX kernel、owner 内置公开 BHT->BTH 写回的最终源码快照；不可变 annotated tag 已创建 |
 
 `gdn-a2-phase2` 是只指向本次里程碑 commit 的不可变 tag；可用 `git rev-parse gdn-a2-phase2^{commit}` 获取精确 commit SHA。后续 Phase 使用新的 `gdn-a2-phaseN` tag，禁止移动已有 tag。
 
@@ -37,12 +38,15 @@ Phase 1/2 在本规则建立前位于同一个未提交工作区，因此首个 
 | Phase 4 | `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | `ChunkCumsumKktSolveTri -> recompute_w_u -> ChunkGatedDeltaRuleFwdHO` | 已按冻结范围完成 A2 功能/精度/生产性能/profiler 和 Git 归档收口 |
 | Phase 4 流水 P1 | 沿用 `aclnnGdnCoreFwdPhase4` / `gdn_core_fwd_phase4` | 同 Phase 4 融合边界；HO 换成无外层全核同步的 chunk-ready 流水/生产核亲和调度 | 已完成 A2 功能/精度/生产性能/workspace/profiler/安装和 Git 归档收口 |
 | Phase 5 P1 Round2 | `aclnnGdnCoreFwdPhase5` / `gdn_core_fwd_phase5` | `ChunkCumsumKktSolveTri -> ChunkRecomputeWUFwdHO`；融合后缀的 D 采用 `chunk x value_head` 展平调度 | 已完成 A2 功能/精度/生产性能/workspace/profiler/clean 安装回归和 Git 归档收口 |
+| Phase 6 | `aclnnGdnCoreFwdPhase6` / `gdn_core_fwd_phase6` | 单 `ChunkGdnCoreFwd` 完成 `ABC+DEF`，owner 内置公开 BHT->BTH 写回；ABC/recompute 同核连续 task 分片 | 已完成 A2 功能/精度/性能/workspace/profiler/clean wheel 回归和 Git 归档收口 |
 | 默认入口 | `aclnnGdnCoreFwd` / `gdn_core_fwd` | 当前与 Phase 2 相同 | 兼容入口，不作为永久 Phase 快照 |
 
 Phase 4 原始冻结验收快照为 `GDN_PHASE4_ACCEPTANCE_A2.md`；流水 P1 使用独立快照
 `GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`，不覆盖原 Phase 4 报告，也不移动已有 tag。
 Phase 5 P0/P1 使用 `GDN_PHASE5_ACCEPTANCE_A2.md`；P0 作为 Phase 5 内部证据，
 最终 `gdn-a2-phase5` 固化 P1 Round2 源码状态。
+Phase 6 使用 `GDN_PHASE6_ACCEPTANCE_A2.md` 记录完整验收证据，现已通过
+`gdn-a2-phase6` 固化。该归档不切换默认入口。
 
 Phase 1 的原始统一 ACLNN 曾被 Phase 2 原地切换到融合 KKT + solve_tri，导致同一 ACLNN 内的 Phase 1 对照消失。2026-07-25 起通过版本化入口纠正：Phase 1、Phase 2 和 Phase 3 均以独立版本化入口在同一包内并存。
 
@@ -62,6 +66,7 @@ phase2_one_aclnn_fused_kkt_solve
 phase3_one_aclnn_fused_cumsum_kkt
 phase4_one_aclnn_fused_fwd_ho
 phase5_one_aclnn_fused_recompute_wu_ho
+phase6_one_aclnn_fused_core
 ```
 
 Phase 3 variant 名为兼容既有结构化报告而保留；最终内部路径是累积单 kernel
@@ -194,3 +199,32 @@ Phase 5 实现里程碑 commit 为 `8208f69e4bf359c3989823490121eb19dadfa157`，
 `7585de6416c102d68e9a5461d7bb31a84a6e4a66`，peeled commit 为上述里程碑。远端回查
 确认归档分支和 Phase 5 tag 指向正确，旧 `gdn-a2-phase2/3/4`、
 `gdn-a2-phase4-pipeline-p1` tag 均保持原 SHA，推送未使用 force。
+
+## 2026-07-31 至 2026-08-03 Phase 6 验收与归档
+
+- 新增 `aclnnGdnCoreFwdPhase6` 和单 `ChunkGdnCoreFwd`，将 Phase 5 的
+  `ABC + public g_cumsum transpose + DEF` 收敛为一个 MIX 任务；
+- 最终调度通过 `kAbcTaskOrder=true` 复用 ABC 的连续核内 task 分片，同一 AIC 生产和
+  消费 `A`，不保留 ABC/DEF 边界全核同步；
+- dense FP16/C64 `T=128/1025` 无 state 与 state 共 `4/4` 对 Phase 5 bit-exact/有限；
+- 最终 profiler 设备任务数 `6 -> 4`；正式短/长三进程配对收益中位数分别为
+  `3.023%/2.413%`，六轮全部改善；
+- run 包 SHA256 为
+  `a47a0535959c474b2dca0c59f7106d17e6a0231b97c46e61148818b0c6984ea8`，
+  opmaster 为 `9102508c6b99800d8014e83f74a92b6993db0bc11877600b1ed3c2b8b5c0af3b`，
+  安装态 `libcust_opapi.so` 为
+  `6ef88eeef19bcde7df83d576ee5f205f8f1c72bf8a0139ed72d42a4314fc76fb`；
+- 详细证据见 `GDN_PHASE6_ACCEPTANCE_A2.md`。
+
+2026-08-01 完整规格和交付门禁已关闭：varlen FP16/BF16 x C64/C128 精度 `4/4`、
+varlen `initial + final state` 主合同 `4/4` 和两个 state 边界合同都对 Phase 5
+bit-exact/有限；A2 device 2 同进程 AB/BA 正式矩阵 `8/8` 改善，矩阵 pairwise median
+为 `-2.733%`；最终 profiler 复验设备任务数 `6 -> 4`。
+
+同日的 clean 来源两次 `git diff --check` 与 source/wheel ABI `11 passed, 6 subtests passed`
+均通过。run 包隔离安装、`4 .o + 4 .json`、wheel OPP 与安装 OPP 的字节一致性、wheel runtime
+varlen smoke 和 Demo composite `2/2 PASS` 已关闭。最终产物身份和完整证据均见
+`GDN_PHASE6_ACCEPTANCE_A2.md`。
+
+收到用户明确归档确认后，已在 `gdn-a2-phase-archive` 上追加 Phase 6 里程碑 commit，
+创建不可变 annotated tag `gdn-a2-phase6`。旧 tag 保持不可变，默认入口也没有切换。

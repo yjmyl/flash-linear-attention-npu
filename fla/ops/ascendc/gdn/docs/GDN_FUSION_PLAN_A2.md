@@ -286,6 +286,108 @@ workspace 逐 case 不变。因此 Round2 接受为 Phase 5 P1，不开启 Round
 `D/E/F` 内部融合，而且两侧 scheduler 和同步模型不同。最终生产结构允许停在更快的
 `ABC + DEF` 两 kernel 路径；“单 kernel”不是独立验收目标，完整 core latency、显存和稳定性才是。
 
+2026-07-31 使用 `gdn-a2-phase5` clean 归档包完成 profiler 闸门。固定 A2 device 4、dense
+FP16、`B=1,Hk=4,Hv=8,K=V=128`，分别测 `C=64/128`、`T=128/1025`，每点三个独立进程。
+以下为目标任务的三轮中位数；边界收益只采用稳定 trace，拒绝把共享卡调度空洞算作 launch 收益：
+
+| shape | ABC | 公开 `g_cumsum` transpose | DEF | 设备任务和 | 若吸收 transpose 的任务侧上限 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C64/T128 | 32.861 us | 9.120 us | 54.461 us | 116.482 us | 约 9.8%（含约 2.25 us 稳定边界） |
+| C64/T1025 | 104.642 us | 13.060 us | 162.163 us | 303.486 us | 约 5.0%（含约 2.25 us 稳定边界） |
+| C128/T128 | 53.761 us | 12.020 us | 51.661 us | 141.063 us | 至少约 8.5%（边界空洞不计） |
+| C128/T1025 | 139.723 us | 17.220 us | 130.063 us | 306.826 us | 至少约 5.6%（边界空洞不计） |
+
+四点现有单 ACLNN workspace 依次为 `73,155,072 / 79,010,304 / 78,149,632 /
+82,169,856 B`。这些数值只作为 Phase 6 P0 的同设备基线；实际可复用量必须由新入口
+实测，不能把 ABC user workspace 的理论字节数直接当作最终降幅。
+
+闸门结论为**带约束 GO**：
+
+1. 仅做 `ABC+DEF`、仍把公开 `g_cumsum` transpose 留在外侧时，稳定 trace 只剩约
+   `1~2 us` 的设备边界可消除，性能价值不足，直接判 no-go。
+2. Phase 6 P0 必须在一次 launch 内完成 `ABC+DEF`，并把公开 `g_cumsum` 的 BHT->BTH
+   写出纳入 kernel；公开输出仍需落 GM，不能把其字节数虚报为已消除。2026-07-31
+   独立探针已排除多 AIV 对同一 BTH 行的 4-byte 分 lane 写回，P0a 只能使用 chunk/row
+   owner 生成完整 BTH 行后写回。
+3. 分 launch 的 ABC 与 DEF workspace 生命周期不重叠；合入单 kernel 后，各核可能异步
+   进入 DEF，因此 P0 只能复用已证明安全的 task/core 私有区，不能先验整段别名。绝对
+   workspace 继续作为收益项而非独立硬门槛。
+4. `T=128` 时 ABC 与 DEF 的活跃核数不同，`T=1025` 时两侧都更接近 24 AIC。
+   P0 必须让未参与 ABC 的核也能安全进入跨阶段同步；不得复用已知有共享卡活性风险的
+   朴素外层 `SyncAll<false>()` 方案。
+5. 第一小步只做 dense FP16、`B=1,logical Hk=4,Hv=8,physical core H=8,T=128,
+   K=V=128,C=64` smoke；先验证无卡死、
+   `o/A/g_cumsum` bit-exact/finite 和任务数目标，再决定是否进入 BF16、varlen 与性能矩阵。
+
+#### Phase 6 公开 BTH 写回探针
+
+`g_cumsum` 公开布局的主要风险不是模板数，而是多核对同一 32-byte GM block 的
+非对齐分 lane 写所有权。A2 device 7 上的 DAV220 探针结果为：
+
+| 模式 | 精度结果 | 结论 |
+| --- | --- | --- |
+| 每 head 一个 AIV，每 BTH 行 4-byte `DataCopyPad` | `17/137` exact，payload 不一致 `557400`，guard 不一致 `0` | **拒绝** |
+| 已是 BTH 的完整行写对照 | `117/117` exact | 可用对照 |
+| owner 在 UB 内 BHT->BTH 后写完整行 | `117/117` exact，guard 不一致 `0` | **P0a 选定** |
+
+独立 kernel 在 `H=8, rows=128/1025` 时，owner 相对完整行对照的差值为
+`-0.339/-0.149 us`；`rows=4096` 时因每 tile 需要 owner 内部 `PIPE_ALL` 排空，差值为
+`+14.694 us`。集成时必须按 chunk 并行分配 owner，不得引入 ABC/DEF 外层全核 barrier；
+完整 core 收益仍由 P0c 复验。原始结果、产物哈希和适用边界见
+[`evidence/phase6_lane_write_probe_20260731/README.md`](evidence/phase6_lane_write_probe_20260731/README.md)。
+
+#### Phase 6 P0 启动卡
+
+| 项目 | 冻结决定 |
+| --- | --- |
+| 版本边界 | 新增 `aclnnGdnCoreFwdPhase6`，Phase 5 tag 和入口保持不可变；生产默认入口在 Phase 6 验收前不切换 |
+| L0/kernel 边界 | 新增单个 `ChunkGdnCoreFwd` / `chunk_gdn_core_fwd`，输入 raw `g` 与 FP32 `beta` 的内部 BHT view，一次 launch 产出 `o/final_state/A` 和公开 BTH `g_cumsum` |
+| 首轮规格 | 仅 A2、dense FP16、`B=1,logical Hk=4,Hv=8,physical core H=8,T=128,K=V=128,C=64`；core 内先冻结外部扩头后的 `Hk==Hv` |
+| 调度 | 统一采用 `global_chunk x value_head` 任务编号；同一 MIX core group 完成本组 ABC 后直接消费本组 A 做 D，不新增 ABC/DEF 全核 barrier |
+| 同步 | ABC 内只使用配对 AIC/AIV flag；D/H/O 沿用 Phase 5 已验收协议。未分到 ABC 实算任务的核仍走空任务握手并进入后续 DEF，禁止提前 return |
+| `g_cumsum` | kernel 同时保留 DEF 所需的 BHT 内部 view；由 chunk/row owner 在 UB 内组织完整 BTH 行并写回公开输出，禁止多 AIV 分 lane 直写；P0 性能候选中不得保留独立 transpose task |
+| workspace | 首个无卡死 smoke 允许暂不别名；随后只复用已证明生命周期不重叠的 task/core 私有区。跨核异步阶段不得整段别名，最终 P0 性能/显存验收前必须给出实测 workspace |
+| 模板 | 沿用 ABC 的 `dtype x chunk_size` 四个静态选择和 DEF 的 V tiling key；不为 shape/dtype 新增 ACLNN 运行时生产分支 |
+
+执行仍按小步跑，不把所有风险塞进第一次构建：
+
+1. **P0a 编译/活性步：** 新入口、新 op、统一任务编号和 ABC->D producer affinity；由
+   chunk/row owner 直接写出完整公开 BTH `g_cumsum` 行。只跑单点超时保护 smoke，
+   不测性能，不做跨阶段 workspace 别名。
+2. **P0b 正确性步：** P0a 无卡死后，对 Phase 5 检查 `o/A/g_cumsum` bit-exact、finite，
+   再补 state 单变量；失败停在该点定位。
+3. **P0c 机理步：** profiler 必须看到 core 计算 `ABC + transpose + DEF` 由三任务变为一个
+   `ChunkGdnCoreFwd`，完整 ACLNN 设备任务目标 `6 -> 4`；同时核对新 kernel body 是否吞掉
+   transpose 收益，不能只看 launch 数。
+4. **P0d workspace/性能步：** 只对已证明安全的私有区做别名，然后跑冻结短/长代表点。
+   单点没有可复现收益时按三轮规则优化；未过单点前不扩 BF16、C128 或 varlen 矩阵。
+
+#### Phase 6 P0 执行结果
+
+P0a~P0d 已于 2026-07-31 按上述顺序完成，结论为 **P0 接受、继续扩规格**：
+
+1. `ChunkGdnCoreFwd` 与 `aclnnGdnCoreFwdPhase6` 已进入完整 A2 run 包；owner 完整行
+   BTH 写回替代了独立公开 transpose task。
+2. `T=1025` 首探针暴露 ABC 连续生产与 recompute 跨核步进消费之间的 `A` 竞争。
+   边界 `SyncAll` 只用于因果验证；最终改为 `kAbcTaskOrder=true` 时复用 ABC 连续核内
+   分片，同核生产/消费，不保留 ABC/DEF 全核 barrier。
+3. dense FP16/C64 `T=128/1025` 无 state 与 state 共 `4/4` 对 Phase 5 bit-exact、
+   `max_abs=0` 且全部有限。最终 profiler 设备任务数 `6 -> 4`，目标段
+   `102.262 -> 84.162 us`。
+4. 正式同进程配对性能每规格三个独立进程、每进程 `20 warmup + 200 iterations`；短点
+   三轮收益中位数 `3.023%`，长点 `2.413%`，六轮全部改善。workspace 分别为
+   `73,155,072 -> 74,371,584 B` 和 `79,010,304 -> 83,140,608 B`，按性能优先原则接受。
+5. 2026-08-01 按 `dense BF16/C64 -> C128 -> varlen -> state` 小步顺序完成完整规格：
+   dense/varlen 的 FP16/BF16 x C64/C128 均对 Phase 5 bit-exact/有限；varlen 主 state
+   合同 `4/4` 及两个 state 边界合同均通过。varlen 的 H/O 可见性问题通过仅 varlen 的
+   H 末尾同步修复，不重新引入 ABC/DEF 边界全核同步。
+6. 正式性能使用 A2 device 2、同进程 AB/BA、每 identity 三轮稳定轮次和 600 个 pooled 样本；
+   8/8 identity 改善，矩阵 pairwise median `-2.733%`。workspace 逐 case 上升，按性能优先、
+   不新增运行时规格分支的既定规则接受。
+7. clean 源树、run 包隔离安装、wheel 隔离安装、wheel ABI/runtime 和 Demo composite 回归全部通过；
+   最终 `ChunkGdnCoreFwd` 包含 `4 .o + 4 .json`。用户确认后已以 `gdn-a2-phase6` 完成
+   Git 归档；默认入口仍保持 Phase 2。详细证据见 [`GDN_PHASE6_ACCEPTANCE_A2.md`](GDN_PHASE6_ACCEPTANCE_A2.md)。
+
 ### Phase 7：transpose/layout 收敛
 
 核心计算边界稳定后，再单独评估输入 `g/beta`、公开 `g_cumsum` 和输出 `o` 的布局适配。每次只移动
@@ -467,9 +569,10 @@ branch 和远端逐 SHA 回查均已完成。`gdn-a2-phase3^{commit}` 固定为
 Phase 4/P1 归档后的 Phase 5 P0 已在冻结 `V=128` 口径下完成 `D+E+F` 安全融合验收。
 同一生产边界内的 P1 三轮优化也已结束：Round2 已通过功能、精度和完整性能矩阵并接受为
 Phase 5 P1，Round3 因 BF16 正确性失败已回退。Phase 5 已以 `gdn-a2-phase5`
-完成 Git/交付归档。当前下一小步是 Phase 6 profiler 可行性闸门；只有剩余
-launch/GM 成本支持时，才启动 `ABC+DEF` 单 kernel 实现。`V=256` 和原生 GVA 在产品计划要求时分别
-启动独立规格闸门，不与本轮 Phase 5 P1 混合进行。
+完成 Git/交付归档。Phase 6 随后完成 `ABC+DEF` 单 launch、owner 内置公开 `g_cumsum`
+写回、ABC/recompute 同核连续 task 分片、dense/varlen/state 全合同、正式性能矩阵和 clean
+wheel 交付回归；用户确认后已以 `gdn-a2-phase6` 完成独立 Git 归档，默认入口保持不变。
+`V=256` 和原生 GVA 在产品计划要求时分别启动独立规格闸门，不与当前 Phase 6 规格扩展混合进行。
 
 ## 8. 相关文件
 
@@ -480,5 +583,6 @@ launch/GM 成本支持时，才启动 `ABC+DEF` 单 kernel 实现。`V=256` 和�
 - GDN Python 入口：`examples/flash_gated_delta_rule.py`
 - Phase 2 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE2_ACCEPTANCE_A2.md`
 - Phase 3 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE3_ACCEPTANCE_A2.md`
+- Phase 6 P0 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE6_ACCEPTANCE_A2.md`
 - Phase 4 流水 P1 A2 验收报告：`fla/ops/ascendc/gdn/docs/GDN_PHASE4_PIPELINE_P1_ACCEPTANCE_A2.md`
 - A2 GDN 融合开发手册：`fla/ops/ascendc/gdn/docs/GDN_FUSION_DEVELOPMENT_PLAYBOOK_A2.md`

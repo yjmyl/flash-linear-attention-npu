@@ -11,6 +11,7 @@ Versioned entries preserve ablation checkpoints:
 | `aclnnGdnCoreFwdPhase3` | cumulative `ChunkCumsumKktSolveTri` plus the remaining three stage kernels |
 | `aclnnGdnCoreFwdPhase4` | Phase 3 preprocessing plus fused `ChunkGatedDeltaRuleFwdHO` |
 | `aclnnGdnCoreFwdPhase5` | Phase 3 preprocessing plus fused `ChunkRecomputeWUFwdHO` |
+| `aclnnGdnCoreFwdPhase6` | single `ChunkGdnCoreFwd` for `ABC+DEF`, including public BHT-to-BTH cumsum writeback |
 | `aclnnGdnCoreFwd` | compatibility alias, currently equivalent to Phase 2 |
 
 Phase 1 preserves:
@@ -29,7 +30,10 @@ same solved-A contract. Phase 4 preserves that preprocessing route and executes
 tensors. Phase 5 additionally fuses `recompute_w_u -> fwd_h -> fwd_o` into one
 `ChunkRecomputeWUFwdHO` MIX kernel. Its accepted Round2 scheduler flattens the
 recompute work over `chunk x value_head`; `w/u/h/v_new` remain internal
-workspace hand-offs rather than public executor tensors. All fixed entries share the same public tensor contract and are
+workspace hand-offs rather than public executor tensors. Phase 6 additionally
+combines the cumulative ABC prefix and the DEF suffix in one MIX kernel. It uses
+owner-complete rows for the public BTH `gCumsumOut` and keeps ABC/recompute tasks
+on the same AIC without an outer full-core barrier. All fixed entries share the same public tensor contract and are
 exported by the same package so they can be compared without reinstalling a
 different wheel.
 
@@ -111,12 +115,20 @@ o, final_state, g_cumsum, a = gdn_core_fwd(
 ```
 
 Use `gdn_core_fwd_phase1`, `gdn_core_fwd_phase2`, `gdn_core_fwd_phase3`,
-`gdn_core_fwd_phase4`, and `gdn_core_fwd_phase5` for permanent Phase A/B.
+`gdn_core_fwd_phase4`, `gdn_core_fwd_phase5`, and `gdn_core_fwd_phase6` for
+versioned Phase A/B.
 Phase 5 is accepted for the
 frozen A2 `K==V==128`, external-GVA scope; later specification gates must add
 new checkpoints instead of changing this path in place. The unversioned
 `gdn_core_fwd` is only the current default and remains equivalent to Phase 2
 for compatibility.
+
+Phase 6 has completed its A2 validation and Git archive but is not the unversioned
+default. The accepted scope is `K=V=128`, external GVA, physical `H=8`, dense
+and canonical varlen metadata, FP16/BF16, and `chunk_size=64/128` (C64/C128),
+including the frozen initial/final-state contracts. It remains intentionally
+out of scope for `V=256`, native GVA, backward, and outer-model fusion. The
+unversioned alias stays on Phase 2 until a separate default-entry decision.
 
 The public wrapper is eager-only. The forward's existing Python autograd wrapper
 continues to use the established GDN backward chain.

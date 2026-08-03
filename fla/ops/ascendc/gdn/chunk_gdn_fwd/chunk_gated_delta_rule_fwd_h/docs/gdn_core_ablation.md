@@ -35,7 +35,8 @@ Permanent one-ACLNN checkpoints are named
 `phase2_one_aclnn_fused_kkt_solve`, and
 `phase3_one_aclnn_fused_cumsum_kkt`, and
 `phase4_one_aclnn_fused_fwd_ho`, and
-`phase5_one_aclnn_fused_recompute_wu_ho`. The Phase 3 variant name is retained for
+`phase5_one_aclnn_fused_recompute_wu_ho`, and
+`phase6_one_aclnn_fused_core`. The Phase 3 variant name is retained for
 report compatibility, but its final route is cumulative
 `ChunkCumsumKktSolveTri` (`cumsum + KKT + solve_tri`), not the rejected split
 `ChunkCumsumKkt -> Cast -> SolveTri` candidate. The unversioned `composite_one_aclnn`
@@ -72,6 +73,21 @@ the accepted `D+E+F` fused checkpoint directly with immutable Phase 4. The
 paired mode uses the same alternating in-process NPU Event method. An
 independent profiler run can select
 `phase5_one_aclnn_fused_recompute_wu_ho` with `--standalone-variant`.
+
+For Phase 6, use `--phase6-accuracy-only` to compare all public outputs directly
+with immutable Phase 5, or `--phase6-paired-only` for same-process alternating
+NPU Event comparison. The validated A2 matrix is dense and canonical varlen,
+FP16/BF16 x C64/C128, `K=V=128`, with dense `T=1025/1024` and varlen `T=259`.
+Use the same `--cu-seqlens` contract when reproducing a varlen point; this is a
+versioned A/B API, not a promise that the unversioned default has switched:
+
+```bash
+python torch_custom/fla_npu/test/benchmark_gdn_core_ablation.py \
+  --device 7 --dtype fp16 --batch 1 --key-heads 4 --value-heads 8 \
+  --tokens 1025 --chunk-size 64 --phase6-paired-only \
+  --warmup 20 --iterations 200 \
+  --output test_output/gdn_ablation/phase6_paired.json
+```
 
 Use `--all-phase-paired-only` for the archived direct Phase 0/1/2/3/4 comparison on one
 input in one process. Every measured round runs all five variants. The base
