@@ -354,7 +354,10 @@ __aicore__ inline int64_t SolveTriCube<MATRIX_SIZE, T>::GetTileValidSize(int64_t
         // TND/NTD: 动态计算每个序列的尾块
         int64_t H = numHeads_;
         int64_t BT = matrixSize_;
-         int64_t chunk_global_idx = layoutMode_ == 2 ? tileIdx / H : tileIdx % totalChunks_;
+        // Both TND and NTD enumerate tiles as chunk_global -> head.
+        // The tile address path above uses tileIdx / H for NTD; decode the
+        // valid tail from the same chunk identity instead of modulo NT.
+        int64_t chunk_global_idx = tileIdx / H;
 
         // 从 chunk_indices 读取 (seq_idx, chunk_in_seq)
         int64_t seq_idx = chunkIndicesGM_.GetValue(chunk_global_idx * 2);
