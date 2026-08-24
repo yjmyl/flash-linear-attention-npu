@@ -1,4 +1,4 @@
-"""Static completion-credit contract for the fused GDN FwdO kernel."""
+"""Static output-drain contract for the fused GDN FwdO kernel."""
 
 from pathlib import Path
 
@@ -16,18 +16,24 @@ FWD_O_SCHEDULER = (
 )
 
 
-def test_fwd_o_joins_subblocks_and_keeps_both_mode2_participants():
+def test_fwd_o_drains_mte3_before_publishing_output_completion():
     kernel = FWD_O_KERNEL.read_text(encoding="utf-8")
     scheduler = FWD_O_SCHEDULER.read_text(encoding="utf-8")
 
     assert "GDN_FWD_O_AIV_FLAG_STRIDE" not in scheduler
     assert "CrossCoreSetFlag<0x4" not in kernel
     assert "CrossCoreWaitFlag<0x4" not in kernel
-    assert "CrossCoreBarrier<0x1, PIPE_MTE3>()" in kernel
-    assert "if (subBlockIdx == 0)" not in kernel
-    assert "PublishAivCompletion(Catlass::Arch::CrossCoreFlag &flag)" in kernel
-    assert "CrossCoreSetFlag<0x2, PIPE_MTE3>(flag)" in kernel
-    assert kernel.count("JoinAivSubblocks(subBlockNum);") == 3
-    assert kernel.count("PublishAivCompletion(") == 5
+    assert "CrossCoreBarrier<0x1, PIPE_MTE3>()" not in kernel
+    assert "PublishAivCompletion" not in kernel
+    output_completion = (
+        "AscendC::PipeBarrier<PIPE_MTE3>();\n"
+        "                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>("
+        "vecBlockScheduler.vec2Done[streamId]);"
+    )
+    assert output_completion in kernel
+    assert kernel.count("AscendC::PipeBarrier<PIPE_MTE3>();") == 1
+    assert kernel.count("CrossCoreSetFlag<0x2, PIPE_MTE3>(") == 4
     assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done[streamId]);") == 1
-    assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[streamId]);") == 2
+    assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[streamId]);") == 1
+    assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[0]);") == 1
+    assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[1]);") == 1

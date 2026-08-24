@@ -250,19 +250,6 @@ public:
         AscendC::IBWait<false>(gmPipelineSync, GetPipelineSyncLocal(), producerAivIdx, eventId);
     }
 
-    __aicore__ inline void JoinAivSubblocks(uint32_t subBlockNum)
-    {
-        if (subBlockNum > 1) {
-            Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();
-            AscendC::PipeBarrier<PIPE_MTE3>();
-        }
-    }
-
-    __aicore__ inline void PublishAivCompletion(Catlass::Arch::CrossCoreFlag &flag)
-    {
-        Catlass::Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(flag);
-    }
-
     __aicore__ inline GDNFwdOKernel() {}
 
     __aicore__ inline void Init(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h, GM_ADDR g,
@@ -419,21 +406,19 @@ public:
                 needRun = true;
                 // AscendC::PipeBarrier<PIPE_ALL>();
             }
-            for (uint32_t streamId = 0; streamId < GDN_FWD_O_PING_PONG_STAGES;
-                 ++streamId) {
-                Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[streamId]);
-            }
+            Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[0]);
+            Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[1]);
         }
 
         if ASCEND_IS_AIV {
 
             uint32_t coreIdx = AscendC::GetBlockIdx();
             uint32_t coreNum = AscendC::GetBlockNum();
+            uint32_t subBlockIdx = AscendC::GetSubBlockIdx();
             uint32_t subBlockNum = AscendC::GetSubBlockNum();
 
-            JoinAivSubblocks(subBlockNum);
-            PublishAivCompletion(vecBlockScheduler.vec2Done[0]);
-            PublishAivCompletion(vecBlockScheduler.vec2Done[1]);
+            Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[0]);
+            Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[1]);
 
             AscendC::LocalTensor<float> maskUbTensor = resource.ubBuf.template GetBufferByByte<float>(0);
             AscendC::Duplicate<float>(maskUbTensor, (float)0.0, 64*64);
@@ -461,9 +446,7 @@ public:
                         gmG[vec1OffsetG], gmAttnWorkspace[vec1OffsetAttn], gmMask,
                         chunkSize, vec1Offsets.blockTokens, kHeadDim, vHeadDim, pingpongFlag, vec1Offsets.batchIdx, vec1Offsets.headIdx, vec1Offsets.chunkIdx
                     );
-                    // Mode 2 requires both AIV participants after their subblock join.
-                    JoinAivSubblocks(subBlockNum);
-                    PublishAivCompletion(vecBlockScheduler.vec1Done[streamId]);
+                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec1Done[streamId]);
                 }
 
                 // AscendC::PipeBarrier<PIPE_ALL>();
@@ -482,8 +465,8 @@ public:
                         gmG[vec2OffsetG], gmVWorkspace[vec2OffsetVWork], gmHWorkspace[vec2OffsetHWork],
                         scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim, pingpongFlag, vec2Offsets.batchIdx, vec2Offsets.headIdx, vec2Offsets.chunkIdx
                     );
-                    JoinAivSubblocks(subBlockNum);
-                    PublishAivCompletion(vecBlockScheduler.vec2Done[streamId]);
+                    AscendC::PipeBarrier<PIPE_MTE3>();
+                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[streamId]);
                 }
                 needRun = true;
             }
