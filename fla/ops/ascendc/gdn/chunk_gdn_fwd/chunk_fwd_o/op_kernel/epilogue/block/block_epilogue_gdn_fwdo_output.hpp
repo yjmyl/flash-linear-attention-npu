@@ -136,6 +136,66 @@ public:
         AscendC::DataCopyPad(output, outputUb, outputParams);
     }
 
+    // Isolated case-368 diagnostic. Four rows from the task64/head4 output
+    // tile are copied only after the real O write has already completed. Each
+    // 48-float fragment occupies the 96 BF16 elements in the known-invalid
+    // upper triangle at the start of sequence [558,813). Remove this before
+    // delivery.
+    CATLASS_DEVICE
+    void CaptureCase368FloatStage(GM_ADDR diagnosticA, AscendC::LocalTensor<float> source,
+                                  uint32_t stage, uint32_t eventId)
+    {
+        static constexpr uint32_t DIAG_T = 1259;
+        static constexpr uint32_t DIAG_BT = 128;
+        static constexpr uint32_t DIAG_TOKEN_BEGIN = 558;
+        static constexpr uint32_t DIAG_COL_BEGIN = 32;
+        static constexpr uint32_t DIAG_FLOATS_PER_A_ROW = 48;
+        static constexpr uint32_t DIAG_SOURCE_ELEMENTS = 4 * 256;
+        static constexpr uint32_t DIAG_A_ROWS_PER_STAGE = 22;
+
+        for (uint32_t row = 0; row < DIAG_A_ROWS_PER_STAGE; ++row) {
+            const uint32_t sourceOffset = row * DIAG_FLOATS_PER_A_ROW;
+            const uint32_t remaining = DIAG_SOURCE_ELEMENTS - sourceOffset;
+            const uint32_t copyElements =
+                remaining < DIAG_FLOATS_PER_A_ROW ? remaining : DIAG_FLOATS_PER_A_ROW;
+            const uint32_t targetHead =
+                stage == 0 ? 1 : (stage == 1 ? 2 : (stage == 2 ? 3 : 5));
+            const uint32_t targetToken = DIAG_TOKEN_BEGIN + row;
+            const uint64_t targetElementOffset =
+                (static_cast<uint64_t>(targetHead) * DIAG_T + targetToken) * DIAG_BT +
+                DIAG_COL_BEGIN;
+            AscendC::GlobalTensor<float> target;
+            target.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(
+                diagnosticA + targetElementOffset * sizeof(uint16_t)));
+
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(eventId);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(eventId);
+            AscendC::DataCopy(target, source[sourceOffset], copyElements);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(eventId);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(eventId);
+        }
+    }
+
+    CATLASS_DEVICE
+    void CaptureCase368VectorStages(GM_ADDR diagnosticA,
+                                    AscendC::LocalTensor<float> hInputUb,
+                                    AscendC::LocalTensor<float> aInputUb,
+                                    AscendC::LocalTensor<float> addOutputUb,
+                                    AscendC::LocalTensor<float> scaledOutputUb,
+                                    uint32_t eventId)
+    {
+        // Consume the completion token from the real O write first. The
+        // observed row is fixed before diagnostics add any traffic.
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(eventId);
+        CaptureCase368FloatStage(diagnosticA, hInputUb, 0, eventId);
+        CaptureCase368FloatStage(diagnosticA, aInputUb, 1, eventId);
+        CaptureCase368FloatStage(diagnosticA, addOutputUb, 2, eventId);
+        CaptureCase368FloatStage(diagnosticA, scaledOutputUb, 3, eventId);
+        // Restore the ping-pong buffer-free token expected by the next tile or
+        // by ProcessWideOutput's final drain.
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(eventId);
+    }
+
     CATLASS_DEVICE
     void ProcessWideOutput(
         AscendC::GlobalTensor<HElementOutput> hOutput,
@@ -146,7 +206,11 @@ public:
         uint32_t mActual,
         uint32_t nActual,
         uint32_t outputStride,
-        uint32_t &pingpongFlag)
+        uint32_t &pingpongFlag,
+        GM_ADDR diagnosticA,
+        uint32_t batchIdx,
+        uint32_t headIdx,
+        uint32_t chunkIdx)
     {
         static constexpr uint32_t ROW_TILE = 16;
         uint32_t subBlockIdx = AscendC::GetSubBlockIdx();
@@ -257,6 +321,16 @@ public:
                 CopyOutputToGm(hOutputThisTile, outUbBFTensor, rowsThisTile, nActual, outputStride);
             }
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0 + pingpongFlag);
+            if (diagnosticA != nullptr && batchIdx == 0 && headIdx == 4 && chunkIdx == 10 &&
+                mActual == 127 && nActual == 256 && outputStride == 256 &&
+                subBlockIdx == 1 && rowStart == 80) {
+                static constexpr uint32_t CAPTURE_LOCAL_ROW = 12;
+                const uint32_t captureOffset = CAPTURE_LOCAL_ROW * nActual;
+                CaptureCase368VectorStages(
+                    diagnosticA, hUbTensor[captureOffset], aUbTensor[captureOffset],
+                    gbrcUpUbTensor[captureOffset], outUbTensor[captureOffset],
+                    EVENT_ID0 + pingpongFlag);
+            }
             pingpongFlag = 1 - pingpongFlag;
             rowStart += rowsThisTile;
         }
@@ -276,14 +350,17 @@ public:
         uint32_t kHeadDim,
         uint32_t vBlockDim,
         uint32_t vHeadDim,
-        uint32_t &pingpongFlag
-        , uint32_t batchIdx, uint32_t headIdx, uint32_t chunkIdx
+        uint32_t &pingpongFlag,
+        GM_ADDR diagnosticA,
+        uint32_t batchIdx, uint32_t headIdx, uint32_t chunkIdx
         )
     {
         uint32_t mActual = chunkSize;
         uint32_t nActual = vBlockDim;
         if (nActual > 128) {
-            ProcessWideOutput(hOutput, gInput, attnInput, hInput, scale, mActual, nActual, vHeadDim, pingpongFlag);
+            ProcessWideOutput(hOutput, gInput, attnInput, hInput, scale, mActual, nActual,
+                              vHeadDim, pingpongFlag, diagnosticA, batchIdx, headIdx,
+                              chunkIdx);
             return;
         }
         uint32_t alignedM = CeilDiv(nActual, 8) * 8;

@@ -206,6 +206,7 @@ public:
     AscendC::GlobalTensor<ElementAttenMasked> gmAftermaskWorkspace;
     AscendC::GlobalTensor<ElementMask> gmMask;
     AscendC::GlobalTensor<int32_t> gmPipelineSync;
+    GM_ADDR diagnosticA{nullptr};
 
     bool chunkPipelineEnabled{false};
     bool taskAffinityEnabled{false};
@@ -253,7 +254,8 @@ public:
     __aicore__ inline GDNFwdOKernel() {}
 
     __aicore__ inline void Init(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h, GM_ADDR g,
-        GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, GM_ADDR o, const GDN::ChunkFwdOTilingData *tilingData, GM_ADDR user) {
+        GM_ADDR cu_seqlens, GM_ADDR chunk_offsets, GM_ADDR o, const GDN::ChunkFwdOTilingData *tilingData,
+        GM_ADDR user, GM_ADDR diagnosticAInput = nullptr) {
 
         shapeBatch = tilingData->shapeBatch;
         seqlen = tilingData->seqlen;
@@ -282,6 +284,7 @@ public:
         gmAttnWorkspace.SetGlobalBuffer((__gm__ ElementAtten *)(user + attnWorkspaceOffset));
         gmAftermaskWorkspace.SetGlobalBuffer((__gm__ ElementAttenMasked *)(user + aftermaskWorkspaceOffset));
         gmMask.SetGlobalBuffer((__gm__ ElementMask *)(user + maskWorkspaceOffset));
+        diagnosticA = diagnosticAInput;
 
         chunkPipelineEnabled = CanRunChunkPipeline();
         taskAffinityEnabled = kChunkPipeline && !chunkPipelineEnabled && (isVariedLen == 0);
@@ -463,7 +466,9 @@ public:
                     epilogueGDNFwdOOutput(
                         gmO[vec2OffsetO],
                         gmG[vec2OffsetG], gmVWorkspace[vec2OffsetVWork], gmHWorkspace[vec2OffsetHWork],
-                        scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim, pingpongFlag, vec2Offsets.batchIdx, vec2Offsets.headIdx, vec2Offsets.chunkIdx
+                        scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim,
+                        pingpongFlag, diagnosticA, vec2Offsets.batchIdx, vec2Offsets.headIdx,
+                        vec2Offsets.chunkIdx
                     );
                     Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(vecBlockScheduler.vec2Done[streamId]);
                 }

@@ -443,10 +443,11 @@ __aicore__ inline void RunPhase6(
         reinterpret_cast<const __gm__ ChunkFwdOTilingData *>(tiling + oTilingOffset);
     ChunkFwdOTilingData oTiling{};
     CopyOTiling(gmOTiling, oTiling);
+    const bool captureCase368 = IsCase368DiagnosticShape(abc);
     DispatchFwdO(q, k, vNew, h, gCumsumBht, cuSeqlens, chunkIndices, o,
-                 userWorkspace, &oTiling);
+                 userWorkspace, &oTiling, captureCase368 ? A : nullptr);
 
-    if (IsCase368DiagnosticShape(abc)) {
+    if (captureCase368) {
         // All blocks execute the same shape guard. The barrier is deliberately
         // after FwdO: the observed output and its race window are already fixed.
         AscendC::SyncAll<false>();

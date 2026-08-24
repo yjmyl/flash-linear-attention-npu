@@ -85,13 +85,8 @@ struct BlockSchedulerGdnFwdO {
 
     Arch::CrossCoreFlag cube1Done[GDN_FWD_O_PING_PONG_STAGES] = {0, 1};
     Arch::CrossCoreFlag vec1Done[GDN_FWD_O_PING_PONG_STAGES] = {2, 3};
-    // Phase6 runs FwdH and FwdO in one MIX kernel.  FwdH already uses 4..7
-    // for its output ping-pong handshake, and SyncAll does not establish that
-    // those event tokens are a fresh namespace for FwdO.  Keep the FwdO
-    // workspace-to-vector handshake on the four DAV220-safe slots that do not
-    // overlap SyncAll's reserved 11..14 flags.
-    Arch::CrossCoreFlag cube3Done[GDN_FWD_O_PING_PONG_STAGES] = {8, 9};
-    Arch::CrossCoreFlag vec2Done[GDN_FWD_O_PING_PONG_STAGES] = {10, 15};
+    Arch::CrossCoreFlag cube3Done[GDN_FWD_O_PING_PONG_STAGES] = {4, 5};
+    Arch::CrossCoreFlag vec2Done[GDN_FWD_O_PING_PONG_STAGES] = {6, 7};
 
     CATLASS_DEVICE
     BlockSchedulerGdnFwdO() {}
