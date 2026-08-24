@@ -428,8 +428,11 @@ public:
             uint32_t subBlockIdx = AscendC::GetSubBlockIdx();
             uint32_t subBlockNum = AscendC::GetSubBlockNum();
 
-            AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(vecBlockScheduler.vec2Done[0].id);
-            AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(vecBlockScheduler.vec2Done[1].id);
+            const uint32_t subBlockFlagOffset = subBlockIdx * GDN_FWD_O_AIV_FLAG_STRIDE;
+            AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
+                vecBlockScheduler.vec2Done[0].id + subBlockFlagOffset);
+            AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
+                vecBlockScheduler.vec2Done[1].id + subBlockFlagOffset);
 
             AscendC::LocalTensor<float> maskUbTensor = resource.ubBuf.template GetBufferByByte<float>(0);
             AscendC::Duplicate<float>(maskUbTensor, (float)0.0, 64*64);
@@ -458,7 +461,7 @@ public:
                         chunkSize, vec1Offsets.blockTokens, kHeadDim, vHeadDim, pingpongFlag, vec1Offsets.batchIdx, vec1Offsets.headIdx, vec1Offsets.chunkIdx
                     );
                     AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                        vecBlockScheduler.vec1Done[streamId].id);
+                        vecBlockScheduler.vec1Done[streamId].id + subBlockFlagOffset);
                 }
 
                 // AscendC::PipeBarrier<PIPE_ALL>();
@@ -478,7 +481,7 @@ public:
                         scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim, pingpongFlag, vec2Offsets.batchIdx, vec2Offsets.headIdx, vec2Offsets.chunkIdx
                     );
                     AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                        vecBlockScheduler.vec2Done[streamId].id);
+                        vecBlockScheduler.vec2Done[streamId].id + subBlockFlagOffset);
                 }
                 needRun = true;
             }
