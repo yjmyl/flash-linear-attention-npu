@@ -25,14 +25,14 @@ constexpr uint64_t PHASE6_SOLVE_DONE_FLAG = 5;
 // The snapshot is taken only after FwdO has completed, so it cannot alter the
 // producer/consumer timing being observed.
 constexpr bool CASE368_CAPTURE_VNEW = true;
-constexpr uint64_t CASE368_CAPTURE_SOURCE_TOKEN = 1097;
+constexpr uint64_t CASE368_CAPTURE_SOURCE_TOKEN = 1161;
 constexpr uint64_t CASE368_CAPTURE_TARGET_TOKEN = 813;
 constexpr uint64_t CASE368_CAPTURE_TOKEN_COUNT = 4;
 constexpr uint64_t CASE368_CAPTURE_V_DIM = 256;
 constexpr uint64_t CASE368_CAPTURE_COL_BEGIN = 32;
 constexpr uint64_t CASE368_CAPTURE_COL_COUNT = 96;
 constexpr uint64_t CASE368_CAPTURE_WORK_CORE = 7;
-constexpr uint64_t CASE368_CAPTURE_WORK_ROW_BEGIN = 28;
+constexpr uint64_t CASE368_CAPTURE_WORK_ROW_BEGIN = 92;
 constexpr uint64_t CASE368_CAPTURE_WORK_ROW_COUNT = 4;
 constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_TARGET = 1;
 constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_CONTROL = 0;
@@ -320,7 +320,7 @@ __aicore__ inline void CaptureCase368Diagnostics(
 
     // Default varlen FwdO scheduling leaves task62 (head2, final chunk) in
     // core7/stage1 and task63 (head3 control) in core7/stage0. Capture raw
-    // float bytes for rows 28..31 from both H/V slots after FwdO completes.
+    // float bytes for rows 92..95 from both H/V slots after FwdO completes.
     const uint64_t stageStride =
         static_cast<uint64_t>(oTiling.chunkSize) * oTiling.vHeadDim;
     const uint64_t rowOffset =
