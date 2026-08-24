@@ -258,12 +258,9 @@ public:
         }
     }
 
-    __aicore__ inline void PublishAivCompletion(
-        Catlass::Arch::CrossCoreFlag &flag, uint32_t subBlockIdx)
+    __aicore__ inline void PublishAivCompletion(Catlass::Arch::CrossCoreFlag &flag)
     {
-        if (subBlockIdx == 0) {
-            Catlass::Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(flag);
-        }
+        Catlass::Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(flag);
     }
 
     __aicore__ inline GDNFwdOKernel() {}
@@ -432,12 +429,11 @@ public:
 
             uint32_t coreIdx = AscendC::GetBlockIdx();
             uint32_t coreNum = AscendC::GetBlockNum();
-            uint32_t subBlockIdx = AscendC::GetSubBlockIdx();
             uint32_t subBlockNum = AscendC::GetSubBlockNum();
 
             JoinAivSubblocks(subBlockNum);
-            PublishAivCompletion(vecBlockScheduler.vec2Done[0], subBlockIdx);
-            PublishAivCompletion(vecBlockScheduler.vec2Done[1], subBlockIdx);
+            PublishAivCompletion(vecBlockScheduler.vec2Done[0]);
+            PublishAivCompletion(vecBlockScheduler.vec2Done[1]);
 
             AscendC::LocalTensor<float> maskUbTensor = resource.ubBuf.template GetBufferByByte<float>(0);
             AscendC::Duplicate<float>(maskUbTensor, (float)0.0, 64*64);
@@ -465,9 +461,9 @@ public:
                         gmG[vec1OffsetG], gmAttnWorkspace[vec1OffsetAttn], gmMask,
                         chunkSize, vec1Offsets.blockTokens, kHeadDim, vHeadDim, pingpongFlag, vec1Offsets.batchIdx, vec1Offsets.headIdx, vec1Offsets.chunkIdx
                     );
-                    // Exactly one completion credit must follow both AIV subblocks.
+                    // Mode 2 requires both AIV participants after their subblock join.
                     JoinAivSubblocks(subBlockNum);
-                    PublishAivCompletion(vecBlockScheduler.vec1Done[streamId], subBlockIdx);
+                    PublishAivCompletion(vecBlockScheduler.vec1Done[streamId]);
                 }
 
                 // AscendC::PipeBarrier<PIPE_ALL>();
@@ -487,7 +483,7 @@ public:
                         scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim, pingpongFlag, vec2Offsets.batchIdx, vec2Offsets.headIdx, vec2Offsets.chunkIdx
                     );
                     JoinAivSubblocks(subBlockNum);
-                    PublishAivCompletion(vecBlockScheduler.vec2Done[streamId], subBlockIdx);
+                    PublishAivCompletion(vecBlockScheduler.vec2Done[streamId]);
                 }
                 needRun = true;
             }

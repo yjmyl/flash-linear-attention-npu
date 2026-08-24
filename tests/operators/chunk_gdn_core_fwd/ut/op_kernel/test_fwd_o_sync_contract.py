@@ -16,7 +16,7 @@ FWD_O_SCHEDULER = (
 )
 
 
-def test_fwd_o_publishes_one_credit_after_both_aiv_subblocks_finish():
+def test_fwd_o_joins_subblocks_and_keeps_both_mode2_participants():
     kernel = FWD_O_KERNEL.read_text(encoding="utf-8")
     scheduler = FWD_O_SCHEDULER.read_text(encoding="utf-8")
 
@@ -24,7 +24,9 @@ def test_fwd_o_publishes_one_credit_after_both_aiv_subblocks_finish():
     assert "CrossCoreSetFlag<0x4" not in kernel
     assert "CrossCoreWaitFlag<0x4" not in kernel
     assert "CrossCoreBarrier<0x1, PIPE_MTE3>()" in kernel
-    assert "if (subBlockIdx == 0)" in kernel
+    assert "if (subBlockIdx == 0)" not in kernel
+    assert "PublishAivCompletion(Catlass::Arch::CrossCoreFlag &flag)" in kernel
+    assert "CrossCoreSetFlag<0x2, PIPE_MTE3>(flag)" in kernel
     assert kernel.count("JoinAivSubblocks(subBlockNum);") == 3
     assert kernel.count("PublishAivCompletion(") == 5
     assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done[streamId]);") == 1
