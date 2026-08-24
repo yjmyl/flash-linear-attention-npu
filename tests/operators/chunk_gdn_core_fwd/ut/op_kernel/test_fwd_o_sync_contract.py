@@ -16,7 +16,7 @@ FWD_O_SCHEDULER = (
 )
 
 
-def test_fwd_o_joins_aiv_subblocks_before_publishing_output_completion():
+def test_fwd_o_joins_aiv_subblocks_before_publishing_work_completions():
     kernel = FWD_O_KERNEL.read_text(encoding="utf-8")
     scheduler = FWD_O_SCHEDULER.read_text(encoding="utf-8")
 
@@ -24,13 +24,19 @@ def test_fwd_o_joins_aiv_subblocks_before_publishing_output_completion():
     assert "CrossCoreSetFlag<0x4" not in kernel
     assert "CrossCoreWaitFlag<0x4" not in kernel
     assert "PublishAivCompletion" not in kernel
-    output_completion = (
+    vec1_completion = (
+        "Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();\n"
+        "                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>("
+        "vecBlockScheduler.vec1Done[streamId]);"
+    )
+    vec2_completion = (
         "Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();\n"
         "                    Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>("
         "vecBlockScheduler.vec2Done[streamId]);"
     )
-    assert output_completion in kernel
-    assert kernel.count("CrossCoreBarrier<0x1, PIPE_MTE3>();") == 1
+    assert vec1_completion in kernel
+    assert vec2_completion in kernel
+    assert kernel.count("CrossCoreBarrier<0x1, PIPE_MTE3>();") == 2
     assert "AscendC::PipeBarrier<PIPE_MTE3>();" not in kernel
     assert kernel.count("CrossCoreSetFlag<0x2, PIPE_MTE3>(") == 4
     assert kernel.count("Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done[streamId]);") == 1
