@@ -14,7 +14,6 @@
 
 constexpr uint32_t GDN_FWD_O_PING_PONG_STAGES = 2;
 constexpr uint32_t GDN_FWD_HO_CONSUMERS_PER_HEAD = 2;
-constexpr uint32_t GDN_FWD_O_AIV_FLAG_STRIDE = 16;
 
 namespace Catlass::Gemm::Block {
 

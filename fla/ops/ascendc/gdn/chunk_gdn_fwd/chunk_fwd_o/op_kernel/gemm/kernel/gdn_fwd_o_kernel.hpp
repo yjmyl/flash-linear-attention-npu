@@ -250,6 +250,22 @@ public:
         AscendC::IBWait<false>(gmPipelineSync, GetPipelineSyncLocal(), producerAivIdx, eventId);
     }
 
+    __aicore__ inline void JoinAivSubblocks(uint32_t subBlockNum)
+    {
+        if (subBlockNum > 1) {
+            Catlass::Arch::CrossCoreBarrier<0x1, PIPE_MTE3>();
+            AscendC::PipeBarrier<PIPE_MTE3>();
+        }
+    }
+
+    __aicore__ inline void PublishAivCompletion(
+        Catlass::Arch::CrossCoreFlag &flag, uint32_t subBlockIdx)
+    {
+        if (subBlockIdx == 0) {
+            Catlass::Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(flag);
+        }
+    }
+
     __aicore__ inline GDNFwdOKernel() {}
 
     __aicore__ inline void Init(GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR h, GM_ADDR g,
@@ -349,15 +365,9 @@ public:
 
                 if (needRun && coreIdx < coreNum) {
                     uint32_t streamId = cubeBlockScheduler.GetPrevStageId();
-                    AscendC::CrossCoreWaitFlag<0x4, PIPE_FIX>(
-                        cubeBlockScheduler.vec1Done[streamId].id);
-                    AscendC::CrossCoreWaitFlag<0x4, PIPE_FIX>(
-                        cubeBlockScheduler.vec1Done[streamId].id + GDN_FWD_O_AIV_FLAG_STRIDE);
+                    Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec1Done[streamId]);
                     // vec2Done protects the H/V workspace consumed by Cube2/3; Cube1 uses a separate slot.
-                    AscendC::CrossCoreWaitFlag<0x4, PIPE_FIX>(
-                        cubeBlockScheduler.vec2Done[streamId].id);
-                    AscendC::CrossCoreWaitFlag<0x4, PIPE_FIX>(
-                        cubeBlockScheduler.vec2Done[streamId].id + GDN_FWD_O_AIV_FLAG_STRIDE);
+                    Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[streamId]);
                     GDNFwdOOffsets& cube2Offsets = cubeBlockScheduler.GetCube23Offsets();
                     int64_t cube2OffsetQ = cube2Offsets.qkOffset;
                     int64_t cube2OffsetH = cube2Offsets.hOffset;
@@ -414,10 +424,7 @@ public:
             }
             for (uint32_t streamId = 0; streamId < GDN_FWD_O_PING_PONG_STAGES;
                  ++streamId) {
-                AscendC::CrossCoreWaitFlag<0x4, PIPE_FIX>(
-                    cubeBlockScheduler.vec2Done[streamId].id);
-                AscendC::CrossCoreWaitFlag<0x4, PIPE_FIX>(
-                    cubeBlockScheduler.vec2Done[streamId].id + GDN_FWD_O_AIV_FLAG_STRIDE);
+                Arch::CrossCoreWaitFlag(cubeBlockScheduler.vec2Done[streamId]);
             }
         }
 
@@ -428,11 +435,9 @@ public:
             uint32_t subBlockIdx = AscendC::GetSubBlockIdx();
             uint32_t subBlockNum = AscendC::GetSubBlockNum();
 
-            const uint32_t subBlockFlagOffset = subBlockIdx * GDN_FWD_O_AIV_FLAG_STRIDE;
-            AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                vecBlockScheduler.vec2Done[0].id + subBlockFlagOffset);
-            AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                vecBlockScheduler.vec2Done[1].id + subBlockFlagOffset);
+            JoinAivSubblocks(subBlockNum);
+            PublishAivCompletion(vecBlockScheduler.vec2Done[0], subBlockIdx);
+            PublishAivCompletion(vecBlockScheduler.vec2Done[1], subBlockIdx);
 
             AscendC::LocalTensor<float> maskUbTensor = resource.ubBuf.template GetBufferByByte<float>(0);
             AscendC::Duplicate<float>(maskUbTensor, (float)0.0, 64*64);
@@ -460,8 +465,9 @@ public:
                         gmG[vec1OffsetG], gmAttnWorkspace[vec1OffsetAttn], gmMask,
                         chunkSize, vec1Offsets.blockTokens, kHeadDim, vHeadDim, pingpongFlag, vec1Offsets.batchIdx, vec1Offsets.headIdx, vec1Offsets.chunkIdx
                     );
-                    AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                        vecBlockScheduler.vec1Done[streamId].id + subBlockFlagOffset);
+                    // Exactly one completion credit must follow both AIV subblocks.
+                    JoinAivSubblocks(subBlockNum);
+                    PublishAivCompletion(vecBlockScheduler.vec1Done[streamId], subBlockIdx);
                 }
 
                 // AscendC::PipeBarrier<PIPE_ALL>();
@@ -480,8 +486,8 @@ public:
                         gmG[vec2OffsetG], gmVWorkspace[vec2OffsetVWork], gmHWorkspace[vec2OffsetHWork],
                         scale, vec2Offsets.blockTokens, kHeadDim, vec2Offsets.vBlockDim, vHeadDim, pingpongFlag, vec2Offsets.batchIdx, vec2Offsets.headIdx, vec2Offsets.chunkIdx
                     );
-                    AscendC::CrossCoreSetFlag<0x4, PIPE_MTE3>(
-                        vecBlockScheduler.vec2Done[streamId].id + subBlockFlagOffset);
+                    JoinAivSubblocks(subBlockNum);
+                    PublishAivCompletion(vecBlockScheduler.vec2Done[streamId], subBlockIdx);
                 }
                 needRun = true;
             }
