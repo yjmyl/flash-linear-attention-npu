@@ -14,6 +14,8 @@
 
 constexpr uint32_t GDN_FWD_O_PING_PONG_STAGES = 2;
 constexpr uint32_t GDN_FWD_HO_CONSUMERS_PER_HEAD = 2;
+constexpr uint32_t GDN_FWD_O_AIV_SUBBLOCKS = 2;
+constexpr uint32_t GDN_FWD_O_AIV_FLAG_STRIDE = 16;
 
 namespace Catlass::Gemm::Block {
 
@@ -83,10 +85,25 @@ struct BlockSchedulerGdnFwdO {
     AscendC::GlobalTensor<int64_t> gmSeqlen;
     AscendC::GlobalTensor<int64_t> gmChunkOffsets;
 
-    Arch::CrossCoreFlag cube1Done[GDN_FWD_O_PING_PONG_STAGES] = {0, 1};
-    Arch::CrossCoreFlag vec1Done[GDN_FWD_O_PING_PONG_STAGES] = {2, 3};
-    Arch::CrossCoreFlag cube3Done[GDN_FWD_O_PING_PONG_STAGES] = {4, 5};
-    Arch::CrossCoreFlag vec2Done[GDN_FWD_O_PING_PONG_STAGES] = {6, 7};
+    // One AIC task is consumed by two AIV subblocks. Keep their credits separate;
+    // otherwise the faster AIV can release a ping-pong workspace still in use by
+    // its sibling. Flag ids 16..31 are the hardware bank for subblock 1.
+    Arch::CrossCoreFlag cube1Done[GDN_FWD_O_AIV_SUBBLOCKS][GDN_FWD_O_PING_PONG_STAGES] = {
+        {0, 1},
+        {GDN_FWD_O_AIV_FLAG_STRIDE, GDN_FWD_O_AIV_FLAG_STRIDE + 1}
+    };
+    Arch::CrossCoreFlag vec1Done[GDN_FWD_O_AIV_SUBBLOCKS][GDN_FWD_O_PING_PONG_STAGES] = {
+        {2, 3},
+        {GDN_FWD_O_AIV_FLAG_STRIDE + 2, GDN_FWD_O_AIV_FLAG_STRIDE + 3}
+    };
+    Arch::CrossCoreFlag cube3Done[GDN_FWD_O_AIV_SUBBLOCKS][GDN_FWD_O_PING_PONG_STAGES] = {
+        {4, 5},
+        {GDN_FWD_O_AIV_FLAG_STRIDE + 4, GDN_FWD_O_AIV_FLAG_STRIDE + 5}
+    };
+    Arch::CrossCoreFlag vec2Done[GDN_FWD_O_AIV_SUBBLOCKS][GDN_FWD_O_PING_PONG_STAGES] = {
+        {6, 7},
+        {GDN_FWD_O_AIV_FLAG_STRIDE + 6, GDN_FWD_O_AIV_FLAG_STRIDE + 7}
+    };
 
     CATLASS_DEVICE
     BlockSchedulerGdnFwdO() {}

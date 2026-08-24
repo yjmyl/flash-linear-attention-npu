@@ -191,13 +191,11 @@ __aicore__ inline void CopyRecomputeTiling(const __gm__ RecomputeWUFwdTilingData
 template <typename InputT, typename GT>
 __aicore__ inline void RunFwdO(GM_ADDR q, GM_ADDR k, GM_ADDR vNew, GM_ADDR h, GM_ADDR g,
                                GM_ADDR cuSeqlens, GM_ADDR chunkIndices, GM_ADDR o,
-                               GM_ADDR userWorkspace, const ChunkFwdOTilingData *tiling,
-                               GM_ADDR diagnosticA = nullptr)
+                               GM_ADDR userWorkspace, const ChunkFwdOTilingData *tiling)
 {
     using Kernel = Catlass::Gemm::Kernel::GDNFwdOKernel<InputT, GT, float, true>;
     Kernel kernel;
-    kernel.Init(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, tiling, userWorkspace,
-                diagnosticA);
+    kernel.Init(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, tiling, userWorkspace);
     kernel.Process();
 }
 
@@ -243,23 +241,20 @@ __aicore__ inline void DispatchRecompute(
 
 __aicore__ inline void DispatchFwdO(GM_ADDR q, GM_ADDR k, GM_ADDR vNew, GM_ADDR h, GM_ADDR g,
                                     GM_ADDR cuSeqlens, GM_ADDR chunkIndices, GM_ADDR o,
-                                    GM_ADDR userWorkspace, const ChunkFwdOTilingData *tiling,
-                                    GM_ADDR diagnosticA = nullptr)
+                                    GM_ADDR userWorkspace, const ChunkFwdOTilingData *tiling)
 {
     if (tiling->dataType == 1) {
         if (tiling->gDataType == 2) {
             RunFwdO<bfloat16_t, float>(q, k, vNew, h, g, cuSeqlens, chunkIndices, o,
-                                       userWorkspace, tiling, diagnosticA);
+                                       userWorkspace, tiling);
         } else {
             RunFwdO<bfloat16_t, bfloat16_t>(q, k, vNew, h, g, cuSeqlens, chunkIndices, o,
-                                            userWorkspace, tiling, diagnosticA);
+                                            userWorkspace, tiling);
         }
     } else if (tiling->gDataType == 2) {
-        RunFwdO<half, float>(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, userWorkspace,
-                             tiling, diagnosticA);
+        RunFwdO<half, float>(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, userWorkspace, tiling);
     } else {
-        RunFwdO<half, half>(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, userWorkspace,
-                            tiling, diagnosticA);
+        RunFwdO<half, half>(q, k, vNew, h, g, cuSeqlens, chunkIndices, o, userWorkspace, tiling);
     }
 }
 

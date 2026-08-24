@@ -21,21 +21,6 @@ constexpr uint32_t OWNER_MTE3_TO_V_EVENT = 2;
 constexpr uint32_t UB_ALIGNMENT = 32;
 constexpr uint32_t PHASE6_TILING_ALIGNMENT = 8;
 constexpr uint64_t PHASE6_SOLVE_DONE_FLAG = 5;
-// Isolated case-368 diagnostic. This branch is never packaged for delivery.
-// The snapshot is taken only after FwdO has completed, so it cannot alter the
-// producer/consumer timing being observed.
-constexpr bool CASE368_CAPTURE_VNEW = true;
-constexpr uint64_t CASE368_CAPTURE_SOURCE_TOKEN = 1161;
-constexpr uint64_t CASE368_CAPTURE_TARGET_TOKEN = 813;
-constexpr uint64_t CASE368_CAPTURE_TOKEN_COUNT = 4;
-constexpr uint64_t CASE368_CAPTURE_V_DIM = 256;
-constexpr uint64_t CASE368_CAPTURE_COL_BEGIN = 32;
-constexpr uint64_t CASE368_CAPTURE_COL_COUNT = 96;
-constexpr uint64_t CASE368_CAPTURE_WORK_CORE = 7;
-constexpr uint64_t CASE368_CAPTURE_WORK_ROW_BEGIN = 92;
-constexpr uint64_t CASE368_CAPTURE_WORK_ROW_COUNT = 4;
-constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_TARGET = 1;
-constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_CONTROL = 0;
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
 constexpr AscendC::SyncAllConfig PHASE6_HO_SYNC_CONFIG = {PIPE_MTE3, PIPE_MTE2};
 #endif
@@ -226,132 +211,6 @@ __aicore__ inline void WritePublicCumsumRows(
     }
 }
 
-__aicore__ inline bool IsCase368DiagnosticShape(const ChunkGdnCoreFwdAbcTiling &tiling)
-{
-    return CASE368_CAPTURE_VNEW && tiling.B == 1 && tiling.Hv == 6 && tiling.T == 1259 &&
-           tiling.K == 128 && tiling.BT == 128 && tiling.isVarlen != 0 &&
-           tiling.dtypeMode == 1;
-}
-
-template <typename InputT>
-__aicore__ inline void StoreCase368RawCapture(
-    AscendC::GlobalTensor<uint16_t> &aGlobal,
-    AscendC::LocalTensor<uint16_t> captureLocal, uint64_t targetHead,
-    uint64_t captureElements, const ChunkGdnCoreFwdAbcTiling &tiling)
-{
-    const uint64_t fullTargetRows = captureElements / CASE368_CAPTURE_COL_COUNT;
-    const uint64_t tailElements = captureElements % CASE368_CAPTURE_COL_COUNT;
-    for (uint64_t row = 0; row < fullTargetRows; ++row) {
-        const uint64_t targetOffset =
-            (targetHead * tiling.T + CASE368_CAPTURE_TARGET_TOKEN + row) * tiling.BT +
-            CASE368_CAPTURE_COL_BEGIN;
-        AscendC::DataCopy(aGlobal[targetOffset],
-                          captureLocal[row * CASE368_CAPTURE_COL_COUNT],
-                          CASE368_CAPTURE_COL_COUNT);
-    }
-    if (tailElements != 0) {
-        const uint64_t targetOffset =
-            (targetHead * tiling.T + CASE368_CAPTURE_TARGET_TOKEN + fullTargetRows) *
-                tiling.BT +
-            CASE368_CAPTURE_COL_BEGIN;
-        AscendC::DataCopy(aGlobal[targetOffset],
-                          captureLocal[fullTargetRows * CASE368_CAPTURE_COL_COUNT],
-                          tailElements);
-    }
-}
-
-template <typename InputT>
-__aicore__ inline void CaptureCase368RawSlice(
-    GM_ADDR sourceBase, uint64_t sourceOffset, uint64_t captureElements,
-    uint64_t targetHead, AscendC::GlobalTensor<uint16_t> &aGlobal,
-    AscendC::LocalTensor<uint16_t> captureLocal,
-    const ChunkGdnCoreFwdAbcTiling &tiling)
-{
-    AscendC::GlobalTensor<uint16_t> sourceGlobal;
-    sourceGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ uint16_t *>(sourceBase));
-    AscendC::DataCopy(captureLocal, sourceGlobal[sourceOffset], captureElements);
-    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(0);
-    StoreCase368RawCapture<InputT>(aGlobal, captureLocal, targetHead,
-                                   captureElements, tiling);
-    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(0);
-}
-
-template <typename InputT>
-__aicore__ inline void CaptureCase368Diagnostics(
-    GM_ADDR vNew, GM_ADDR A, GM_ADDR userWorkspace,
-    const ChunkFwdOTilingData &oTiling,
-    const ChunkGdnCoreFwdAbcTiling &tiling)
-{
-    if ASCEND_IS_AIC {
-        return;
-    }
-    if (GetBlockIdx() != 0 || GetSubBlockIdx() != 0) {
-        return;
-    }
-
-    constexpr uint64_t vNewCaptureElements =
-        CASE368_CAPTURE_TOKEN_COUNT * CASE368_CAPTURE_V_DIM;
-    constexpr uint64_t workspaceCaptureElements =
-        CASE368_CAPTURE_WORK_ROW_COUNT * CASE368_CAPTURE_V_DIM *
-        sizeof(float) / sizeof(uint16_t);
-    constexpr uint64_t captureHeads[] = {0, 2};
-
-    AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> captureBuf;
-    pipe.InitBuffer(captureBuf, workspaceCaptureElements * sizeof(uint16_t));
-    AscendC::LocalTensor<uint16_t> captureLocal = captureBuf.Get<uint16_t>();
-
-    AscendC::GlobalTensor<uint16_t> aGlobal;
-    aGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ uint16_t *>(A),
-                            tiling.B * tiling.Hv * tiling.T * tiling.BT);
-
-    // Preserve the original vNew gate. InputT is BF16 for this exact shape, so
-    // viewing it as uint16_t records the input bits without a conversion.
-    for (uint64_t captureHead : captureHeads) {
-        const uint64_t sourceOffset =
-            (captureHead * tiling.T + CASE368_CAPTURE_SOURCE_TOKEN) *
-            CASE368_CAPTURE_V_DIM;
-        CaptureCase368RawSlice<InputT>(
-            vNew, sourceOffset, vNewCaptureElements, captureHead,
-            aGlobal, captureLocal, tiling);
-    }
-
-    // Default varlen FwdO scheduling leaves task62 (head2, final chunk) in
-    // core7/stage1 and task63 (head3 control) in core7/stage0. Capture raw
-    // float bytes for rows 92..95 from both H/V slots after FwdO completes.
-    const uint64_t stageStride =
-        static_cast<uint64_t>(oTiling.chunkSize) * oTiling.vHeadDim;
-    const uint64_t rowOffset =
-        CASE368_CAPTURE_WORK_ROW_BEGIN * oTiling.vHeadDim;
-    const uint64_t targetWorkStage =
-        CASE368_CAPTURE_WORK_CORE * GDN_FWD_O_PING_PONG_STAGES +
-        CASE368_CAPTURE_WORK_STAGE_TARGET;
-    const uint64_t controlWorkStage =
-        CASE368_CAPTURE_WORK_CORE * GDN_FWD_O_PING_PONG_STAGES +
-        CASE368_CAPTURE_WORK_STAGE_CONTROL;
-    const uint64_t targetSourceOffset =
-        (targetWorkStage * stageStride + rowOffset) *
-        sizeof(float) / sizeof(uint16_t);
-    const uint64_t controlSourceOffset =
-        (controlWorkStage * stageStride + rowOffset) *
-        sizeof(float) / sizeof(uint16_t);
-
-    CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.hWorkspaceOffset, targetSourceOffset,
-        workspaceCaptureElements, 1, aGlobal, captureLocal, tiling);
-    CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.vWorkspaceOffset, targetSourceOffset,
-        workspaceCaptureElements, 2, aGlobal, captureLocal, tiling);
-    CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.hWorkspaceOffset, controlSourceOffset,
-        workspaceCaptureElements, 3, aGlobal, captureLocal, tiling);
-    CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.vWorkspaceOffset, controlSourceOffset,
-        workspaceCaptureElements, 5, aGlobal, captureLocal, tiling);
-}
-
 template <typename InputT, typename TileShapes>
 __aicore__ inline void RunPhase6(
     GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR beta, GM_ADDR rawG, GM_ADDR gk,
@@ -443,16 +302,8 @@ __aicore__ inline void RunPhase6(
         reinterpret_cast<const __gm__ ChunkFwdOTilingData *>(tiling + oTilingOffset);
     ChunkFwdOTilingData oTiling{};
     CopyOTiling(gmOTiling, oTiling);
-    const bool captureCase368 = IsCase368DiagnosticShape(abc);
     DispatchFwdO(q, k, vNew, h, gCumsumBht, cuSeqlens, chunkIndices, o,
-                 userWorkspace, &oTiling, captureCase368 ? A : nullptr);
-
-    if (captureCase368) {
-        // All blocks execute the same shape guard. The barrier is deliberately
-        // after FwdO: the observed output and its race window are already fixed.
-        AscendC::SyncAll<false>();
-        CaptureCase368Diagnostics<InputT>(vNew, A, userWorkspace, oTiling, abc);
-    }
+                 userWorkspace, &oTiling);
 }
 
 } // namespace
