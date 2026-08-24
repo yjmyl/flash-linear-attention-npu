@@ -25,17 +25,17 @@ constexpr uint64_t PHASE6_SOLVE_DONE_FLAG = 5;
 // The snapshot is taken only after FwdO has completed, so it cannot alter the
 // producer/consumer timing being observed.
 constexpr bool CASE368_CAPTURE_VNEW = true;
-constexpr uint64_t CASE368_CAPTURE_SOURCE_TOKEN = 1161;
+constexpr uint64_t CASE368_CAPTURE_SOURCE_TOKEN = 1097;
 constexpr uint64_t CASE368_CAPTURE_TARGET_TOKEN = 813;
 constexpr uint64_t CASE368_CAPTURE_TOKEN_COUNT = 4;
 constexpr uint64_t CASE368_CAPTURE_V_DIM = 256;
 constexpr uint64_t CASE368_CAPTURE_COL_BEGIN = 32;
 constexpr uint64_t CASE368_CAPTURE_COL_COUNT = 96;
-constexpr uint64_t CASE368_CAPTURE_WORK_CORE = 8;
-constexpr uint64_t CASE368_CAPTURE_WORK_ROW_BEGIN = 92;
+constexpr uint64_t CASE368_CAPTURE_WORK_CORE = 7;
+constexpr uint64_t CASE368_CAPTURE_WORK_ROW_BEGIN = 28;
 constexpr uint64_t CASE368_CAPTURE_WORK_ROW_COUNT = 4;
-constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_TASK64 = 1;
-constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_TASK65 = 0;
+constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_TARGET = 1;
+constexpr uint64_t CASE368_CAPTURE_WORK_STAGE_CONTROL = 0;
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
 constexpr AscendC::SyncAllConfig PHASE6_HO_SYNC_CONFIG = {PIPE_MTE3, PIPE_MTE2};
 #endif
@@ -296,7 +296,7 @@ __aicore__ inline void CaptureCase368Diagnostics(
     constexpr uint64_t workspaceCaptureElements =
         CASE368_CAPTURE_WORK_ROW_COUNT * CASE368_CAPTURE_V_DIM *
         sizeof(float) / sizeof(uint16_t);
-    constexpr uint64_t captureHeads[] = {0, 4};
+    constexpr uint64_t captureHeads[] = {0, 2};
 
     AscendC::TPipe pipe;
     AscendC::TBuf<AscendC::TPosition::VECCALC> captureBuf;
@@ -318,37 +318,37 @@ __aicore__ inline void CaptureCase368Diagnostics(
             aGlobal, captureLocal, tiling);
     }
 
-    // Default varlen FwdO scheduling leaves task64 (head4, final chunk) in
-    // core8/stage1 and task65 (head5 control) in core8/stage0. Capture raw
-    // float bytes for rows 92..95 from both H/V slots after FwdO completes.
+    // Default varlen FwdO scheduling leaves task62 (head2, final chunk) in
+    // core7/stage1 and task63 (head3 control) in core7/stage0. Capture raw
+    // float bytes for rows 28..31 from both H/V slots after FwdO completes.
     const uint64_t stageStride =
         static_cast<uint64_t>(oTiling.chunkSize) * oTiling.vHeadDim;
     const uint64_t rowOffset =
         CASE368_CAPTURE_WORK_ROW_BEGIN * oTiling.vHeadDim;
-    const uint64_t task64WorkStage =
+    const uint64_t targetWorkStage =
         CASE368_CAPTURE_WORK_CORE * GDN_FWD_O_PING_PONG_STAGES +
-        CASE368_CAPTURE_WORK_STAGE_TASK64;
-    const uint64_t task65WorkStage =
+        CASE368_CAPTURE_WORK_STAGE_TARGET;
+    const uint64_t controlWorkStage =
         CASE368_CAPTURE_WORK_CORE * GDN_FWD_O_PING_PONG_STAGES +
-        CASE368_CAPTURE_WORK_STAGE_TASK65;
-    const uint64_t task64SourceOffset =
-        (task64WorkStage * stageStride + rowOffset) *
+        CASE368_CAPTURE_WORK_STAGE_CONTROL;
+    const uint64_t targetSourceOffset =
+        (targetWorkStage * stageStride + rowOffset) *
         sizeof(float) / sizeof(uint16_t);
-    const uint64_t task65SourceOffset =
-        (task65WorkStage * stageStride + rowOffset) *
+    const uint64_t controlSourceOffset =
+        (controlWorkStage * stageStride + rowOffset) *
         sizeof(float) / sizeof(uint16_t);
 
     CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.hWorkspaceOffset, task64SourceOffset,
+        userWorkspace + oTiling.hWorkspaceOffset, targetSourceOffset,
         workspaceCaptureElements, 1, aGlobal, captureLocal, tiling);
     CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.vWorkspaceOffset, task64SourceOffset,
+        userWorkspace + oTiling.vWorkspaceOffset, targetSourceOffset,
         workspaceCaptureElements, 2, aGlobal, captureLocal, tiling);
     CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.hWorkspaceOffset, task65SourceOffset,
+        userWorkspace + oTiling.hWorkspaceOffset, controlSourceOffset,
         workspaceCaptureElements, 3, aGlobal, captureLocal, tiling);
     CaptureCase368RawSlice<InputT>(
-        userWorkspace + oTiling.vWorkspaceOffset, task65SourceOffset,
+        userWorkspace + oTiling.vWorkspaceOffset, controlSourceOffset,
         workspaceCaptureElements, 5, aGlobal, captureLocal, tiling);
 }
 

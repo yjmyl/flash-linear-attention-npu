@@ -136,7 +136,7 @@ public:
         AscendC::DataCopyPad(output, outputUb, outputParams);
     }
 
-    // Isolated case-368 diagnostic. Four rows from the task64/head4 output
+    // Isolated case-368 diagnostic. Four rows from the task62/head2 output
     // tile are copied only after the real O write has already completed. Each
     // 48-float fragment occupies the 96 BF16 elements in the known-invalid
     // upper triangle at the start of sequence [558,813). Remove this before
@@ -321,9 +321,9 @@ public:
                 CopyOutputToGm(hOutputThisTile, outUbBFTensor, rowsThisTile, nActual, outputStride);
             }
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID0 + pingpongFlag);
-            if (diagnosticA != nullptr && batchIdx == 0 && headIdx == 4 && chunkIdx == 10 &&
+            if (diagnosticA != nullptr && batchIdx == 0 && headIdx == 2 && chunkIdx == 10 &&
                 mActual == 127 && nActual == 256 && outputStride == 256 &&
-                subBlockIdx == 1 && rowStart == 80) {
+                subBlockIdx == 0 && rowStart == 16) {
                 static constexpr uint32_t CAPTURE_LOCAL_ROW = 12;
                 const uint32_t captureOffset = CAPTURE_LOCAL_ROW * nActual;
                 CaptureCase368VectorStages(
