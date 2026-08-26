@@ -396,6 +396,7 @@ public:
                         blockMmadAttenVNEW128.preSetFlags();
                         blockMmadAttenVNEW128(tensorBlockAttnMask, tensorBlockV, tensorBlockVWork, cube3Shape);
                         blockMmadAttenVNEW128.finalWaitFlags();
+                    AscendC::PipeBarrier<PIPE_FIX>();
                     } else {
                         blockMmadAttenVNEW256.preSetFlags();
                         blockMmadAttenVNEW256(tensorBlockAttnMask, tensorBlockV, tensorBlockVWork, cube3Shape);
