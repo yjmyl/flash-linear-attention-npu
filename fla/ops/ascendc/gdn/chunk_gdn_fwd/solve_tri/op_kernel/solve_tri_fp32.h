@@ -11,6 +11,13 @@
 #ifndef SOLVE_TRI_FP32_H
 #define SOLVE_TRI_FP32_H
 
+// The chw Catlass headers select the AtlasA2 tile-copy specializations through
+// CATLASS_ARCH. Standalone SolveTri does not include another Catlass kernel
+// that defines it first, so bind the imported A2-only implementation here.
+#ifndef CATLASS_ARCH
+#define CATLASS_ARCH 2201
+#endif
+
 #include "kernel_operator.h"
 #include "catlass/arch/arch.hpp"
 #include "catlass/arch/cross_core_sync.hpp"

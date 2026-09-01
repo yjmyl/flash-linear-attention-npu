@@ -36,6 +36,7 @@ def test_fp32_solver_preserves_fp32_workspace_and_full_tail_rows():
     header = (SOLVE_DIR / "op_kernel/solve_tri_fp32.h").read_text(encoding="utf-8")
 
     assert "SetHF32Mode(false);" in header
+    assert "#define CATLASS_ARCH 2201" in header
     assert "GlobalTensor<float> workspaceGM_;" in header
     assert "LocalTensor<float> fp32LocalA_;" in header
     assert "bool perCoreWorkspace = false" in header
