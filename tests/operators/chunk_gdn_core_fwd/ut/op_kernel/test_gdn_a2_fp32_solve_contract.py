@@ -43,6 +43,8 @@ def test_fp32_solver_preserves_fp32_workspace_and_full_tail_rows():
     assert header.count("if (perCoreWorkspace)") == 2
     assert header.count("coreWorkspaceGM_ = workspaceGM_;") == 2
     assert "FP32_MATRIX_SIZE * sizeof(T)" in header
+    assert header.count("(rowStride_ - FP32_MATRIX_SIZE) * sizeof(T)") == 1
+    assert header.count("(rowStride_ - validSize) * sizeof(T)") == 1
     assert "Cast(inputLocal_, fp32LocalA_, RoundMode::CAST_RINT" in header
 
 

@@ -868,7 +868,7 @@ private:
             static_cast<uint16_t>(rows),
             blockBytes,
             (localRowBytes - alignedBlockBytes) / 32U,
-            static_cast<uint32_t>((rowStride_ - validSize) * sizeof(T)),
+            static_cast<uint32_t>((rowStride_ - FP32_MATRIX_SIZE) * sizeof(T)),
             0};
         SetFlag<HardEvent::V_MTE3>(0);
         WaitFlag<HardEvent::V_MTE3>(0);
