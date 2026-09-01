@@ -248,8 +248,14 @@ ge::graphStatus Tiling4ChunkGdnCoreFwd(gert::TilingContext *context)
         AlignUp(abc.taskNum * abc.BT * abc.BT * sizeof(float), WORKSPACE_ALIGNMENT);
     abc.aWorkspaceBytes = AlignUp(
         abc.B * abc.Hv * abc.T * abc.BT * sizeof(uint16_t), WORKSPACE_ALIGNMENT);
-    abc.solveWorkspacePerCoreBytes = AlignUp(
-        5 * abc.BT * abc.BT * sizeof(uint16_t), WORKSPACE_ALIGNMENT);
+    if (abc.BT == 64 && !isVarlen) {
+        constexpr uint64_t fp32WorkspaceSlots = 4;
+        abc.solveWorkspacePerCoreBytes = AlignUp(
+            fp32WorkspaceSlots * abc.BT * abc.BT * sizeof(float), WORKSPACE_ALIGNMENT);
+    } else {
+        abc.solveWorkspacePerCoreBytes = AlignUp(
+            5 * abc.BT * abc.BT * sizeof(uint16_t), WORKSPACE_ALIGNMENT);
+    }
     abc.totalTiles = static_cast<int64_t>(abc.taskNum);
     abc.matrixSize = *chunkSize;
     abc.numHeads = valueHeads;

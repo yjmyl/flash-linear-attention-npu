@@ -228,9 +228,16 @@ ge::graphStatus ChunkKktSolveTriTilingFunc(gert::TilingContext *context)
     if (workspace == nullptr) {
         return ge::GRAPH_FAILED;
     }
-    const uint64_t solveShared = 3 * bt * bt * sizeof(uint16_t);
-    const uint64_t solvePerCore = 2 * bt * bt * sizeof(uint16_t);
-    const uint64_t solveWorkspacePerCore = AlignUp(solveShared + solvePerCore, WORKSPACE_ALIGN);
+    uint64_t solveWorkspacePerCore = 0;
+    if (bt == 64 && isVarlen == 0) {
+        constexpr uint64_t fp32WorkspaceSlots = 4;
+        solveWorkspacePerCore = AlignUp(
+            fp32WorkspaceSlots * bt * bt * sizeof(float), WORKSPACE_ALIGN);
+    } else {
+        const uint64_t solveShared = 3 * bt * bt * sizeof(uint16_t);
+        const uint64_t solvePerCore = 2 * bt * bt * sizeof(uint16_t);
+        solveWorkspacePerCore = AlignUp(solveShared + solvePerCore, WORKSPACE_ALIGN);
+    }
     tiling.set_solveWorkspacePerCoreBytes(solveWorkspacePerCore);
     tiling.SaveToBuffer(context->GetRawTilingData()->GetData(), context->GetRawTilingData()->GetCapacity());
     context->GetRawTilingData()->SetDataSize(tiling.GetDataSize());

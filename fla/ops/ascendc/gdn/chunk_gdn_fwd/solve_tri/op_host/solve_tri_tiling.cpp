@@ -157,9 +157,15 @@ constexpr uint32_t ATTR_LAYOUT_IDX = 0;
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
      ws[0] = sysWorkspaceSize;
 #else
-     size_t sharedSize = 3 * chunkSize * chunkSize * sizeof(uint16_t);  // I + -I + ZERO
-     size_t perCoreSize = 2 * chunkSize * chunkSize * sizeof(uint16_t);  // 每核 2 个中转区（X 流 + Y 流双缓冲）
-     size_t userWorkspaceSize = sharedSize + usedCoreNum * perCoreSize;
+     size_t userWorkspaceSize = 0;
+     if (chunkSize == 64 && (layoutMode == 0 || layoutMode == 1)) {
+         constexpr size_t fp32WorkspaceSlots = 4;
+         userWorkspaceSize = usedCoreNum * fp32WorkspaceSlots * chunkSize * chunkSize * sizeof(float);
+     } else {
+         size_t sharedSize = 3 * chunkSize * chunkSize * sizeof(uint16_t);  // I + -I + ZERO
+         size_t perCoreSize = 2 * chunkSize * chunkSize * sizeof(uint16_t);  // 每核 2 个中转区（X 流 + Y 流双缓冲）
+         userWorkspaceSize = sharedSize + usedCoreNum * perCoreSize;
+     }
      // 对齐到 512 字节
      userWorkspaceSize = ((userWorkspaceSize + 511) / 512) * 512;
      // 总 workspace = 用户 workspace + 系统 workspace
@@ -179,5 +185,4 @@ constexpr uint32_t ATTR_LAYOUT_IDX = 0;
      .Tiling(SolveTriTilingFunc)
      .TilingParse<SolveTriCompileInfo>(SolveTriTilingParse);
  
- }  // namespace optiling
- 
+}  // namespace optiling

@@ -7,6 +7,7 @@
 #include "arch35/solve_tri_ascend950.h"
 #else
 #include "solve_tri_cube.h"
+#include "solve_tri_fp32.h"
 #include "solve_tri_vector.h"
 #endif
 
@@ -32,6 +33,25 @@ __aicore__ inline void RunSolvePhase(GM_ADDR a, GM_ADDR cuSeqlens, GM_ADDR chunk
     solve.Init(a, cuSeqlens, chunkIndices, out, workspace, tilingData);
     solve.Process();
 #else
+    if constexpr (MATRIX_SIZE == 64) {
+        // The imported FP32 solver currently models contiguous dense BNSD
+        // tiles. Preserve the existing solver for every other layout/scope.
+        if (tilingData->layoutMode == 0) {
+            if ASCEND_IS_AIC {
+                CrossCoreWaitFlag(KKT_READY_FLAG);
+                NsSolveTri::SolveTriCubeFp32<T> solve;
+                solve.Init(a, cuSeqlens, chunkIndices, out, workspace, tilingData, true);
+                solve.Process();
+            }
+            if ASCEND_IS_AIV {
+                CrossCoreSetFlag<0x2, PIPE_MTE3>(KKT_READY_FLAG);
+                NsSolveTri::SolveTriVectorFp32<T> solve;
+                solve.Init(a, cuSeqlens, chunkIndices, out, workspace, tilingData, true);
+                solve.Process();
+            }
+            return;
+        }
+    }
     if ASCEND_IS_AIC {
         CrossCoreWaitFlag(KKT_READY_FLAG);
         NsSolveTri::SolveTriCube<MATRIX_SIZE, T> solve;

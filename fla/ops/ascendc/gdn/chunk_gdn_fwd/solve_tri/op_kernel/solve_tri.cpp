@@ -9,6 +9,7 @@
 #else
 #include "lib/matmul_intf.h"
 #include "solve_tri_cube.h"
+#include "solve_tri_fp32.h"
 #include "solve_tri_vector.h"
 #endif
 
@@ -40,6 +41,8 @@ extern "C" __global__ __aicore__ void solve_tri(GM_ADDR x, GM_ADDR cu_seqlens, G
         int64_t totalTiles = tilingData.totalTiles;
         int64_t tilesPerCore = tilingData.tilesPerCore;
         int64_t dtypeMode = tilingData.dtypeMode;  // 0=fp16, 1=bf16
+        bool useFp32Solve = ms == 64 &&
+            (tilingData.layoutMode == 0 || tilingData.layoutMode == 1);
         
         // // AIC 核：执行 CUBE 矩阵乘法
         if ASCEND_IS_AIC {
@@ -54,6 +57,12 @@ extern "C" __global__ __aicore__ void solve_tri(GM_ADDR x, GM_ADDR cu_seqlens, G
                     op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
                     op.Process();
                 } else if (ms == 64) {
+                    if (useFp32Solve) {
+                        NsSolveTri::SolveTriCubeFp32<half> op;
+                        op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
+                        op.Process();
+                        return;
+                    }
                     NsSolveTri::SolveTriCube<64, half> op;
                     op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
                     op.Process();
@@ -73,6 +82,12 @@ extern "C" __global__ __aicore__ void solve_tri(GM_ADDR x, GM_ADDR cu_seqlens, G
                     op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
                     op.Process();
                 } else if (ms == 64) {
+                    if (useFp32Solve) {
+                        NsSolveTri::SolveTriCubeFp32<bfloat16_t> op;
+                        op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
+                        op.Process();
+                        return;
+                    }
                     NsSolveTri::SolveTriCube<64, bfloat16_t> op;
                     op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
                     op.Process();
@@ -97,6 +112,12 @@ extern "C" __global__ __aicore__ void solve_tri(GM_ADDR x, GM_ADDR cu_seqlens, G
                     op.Init(workspace, totalTiles, ms);
                     op.Process();
                 } else if (ms == 64) {
+                    if (useFp32Solve) {
+                        NsSolveTri::SolveTriVectorFp32<half> op;
+                        op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
+                        op.Process();
+                        return;
+                    }
                     NsSolveTri::SolveTriVector<64, half> op;
                     op.Init(workspace, totalTiles, ms);
                     op.Process();
@@ -116,6 +137,12 @@ extern "C" __global__ __aicore__ void solve_tri(GM_ADDR x, GM_ADDR cu_seqlens, G
                     op.Init(workspace, totalTiles, ms);
                     op.Process();
                 } else if (ms == 64) {
+                    if (useFp32Solve) {
+                        NsSolveTri::SolveTriVectorFp32<bfloat16_t> op;
+                        op.Init(x, cu_seqlens, chunk_indices, x_out, workspace, &tilingData);
+                        op.Process();
+                        return;
+                    }
                     NsSolveTri::SolveTriVector<64, bfloat16_t> op;
                     op.Init(workspace, totalTiles, ms);
                     op.Process();
