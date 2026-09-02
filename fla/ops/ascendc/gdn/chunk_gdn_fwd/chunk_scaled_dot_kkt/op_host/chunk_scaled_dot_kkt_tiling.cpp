@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "../op_kernel/chunk_scaled_dot_kkt_common.h"
 #include "register/op_impl_registry.h"
 #include "tiling/platform/platform_ascendc.h"
 
@@ -102,6 +103,48 @@ bool MulOverflow(uint64_t a, uint64_t b, uint64_t *out)
     return false;
 }
 
+bool IsCatlassScoreArchSupported(NpuArch npuArch)
+{
+    // Keep CATLASS score on SOCs with a matching arch tag and validated cross-core pipeline.
+    return npuArch == NpuArch::DAV_3510;
+}
+
+uint64_t ScoreRowBlockSize(uint64_t bt, NpuArch npuArch)
+{
+    uint64_t rowBlock = static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_ROW_BLOCK_A2);
+    if (npuArch == NpuArch::DAV_3510) {
+        rowBlock = bt <= static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_ROW_BLOCK_A5_BT64)
+                       ? static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_ROW_BLOCK_A5_BT64)
+                       : static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_ROW_BLOCK_A5_BT128);
+    }
+    return std::min<uint64_t>(bt, rowBlock);
+}
+
+uint64_t ScoreRowBlockCount(uint64_t bt, NpuArch npuArch)
+{
+    const uint64_t rowBlockSize = ScoreRowBlockSize(bt, npuArch);
+    return rowBlockSize == 0 ? 0 : CeilDiv(bt, rowBlockSize);
+}
+
+uint64_t ScoreGroupBatch(uint64_t scoreBlockTaskNum,
+                         uint64_t usedAicNum,
+                         uint64_t bt,
+                         uint64_t t,
+                         uint64_t isVarlen,
+                         bool useCatlassScore)
+{
+    if (!useCatlassScore || usedAicNum == 0 || scoreBlockTaskNum == 0) {
+        return 1;
+    }
+    if (bt == static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_ROW_BLOCK_A5_BT128) &&
+        (isVarlen != 0 || (t % bt) != 0)) {
+        return 1;
+    }
+    const uint64_t waves = CeilDiv(scoreBlockTaskNum, usedAicNum);
+    return std::max<uint64_t>(
+        1, std::min<uint64_t>(static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_WORKSPACE_HEAD_BATCH), waves));
+}
+
 ge::graphStatus BuildCubeTiling(uint64_t bt, uint64_t k, ge::DataType kDtype, ChunkScaledDotKktTilingData &tiling)
 {
     matmul_tiling::MatmulApiTiling mm;
@@ -139,7 +182,9 @@ ge::graphStatus BuildCubeTiling(uint64_t bt, uint64_t k, ge::DataType kDtype, Ch
 }
 }  // namespace
 
-ge::graphStatus TilingFunc(gert::TilingContext *context)
+// ChunkCumsumKkt still uses the legacy fused kernel. It needs one full score tile per task and must not
+// inherit the standalone kernel's ring-workspace or CATLASS scheduling contract.
+ge::graphStatus TilingFuncImpl(gert::TilingContext *context, bool fusedCumsumKkt)
 {
     if (context == nullptr || context->GetInputShape(kInputKIndex) == nullptr ||
         context->GetInputShape(kInputGIndex) == nullptr || context->GetInputShape(kInputBetaIndex) == nullptr ||
@@ -166,7 +211,8 @@ ge::graphStatus TilingFunc(gert::TilingContext *context)
     const int64_t hvI64 = gShape.GetDim(1);
     if (bI64 <= 0 || hkI64 <= 0 || hvI64 <= 0 || tI64 <= 0 || kI64 <= 0 ||
         gShape.GetDim(0) != bI64 || gShape.GetDim(2) != tI64 ||
-        !Shape3Equal(betaShape, bI64, hvI64, tI64) || (hvI64 % hkI64) != 0) {
+        !Shape3Equal(betaShape, bI64, hvI64, tI64) || (hvI64 % hkI64) != 0 ||
+        (fusedCumsumKkt && hkI64 != hvI64)) {
         return ge::GRAPH_FAILED;
     }
 
@@ -220,25 +266,19 @@ ge::graphStatus TilingFunc(gert::TilingContext *context)
         isVarlen = 1;
     }
 
-    uint64_t bh = 0;
-    uint64_t taskNum = 0;
-    uint64_t scoreElems = 0;
-    uint64_t scoreBytes = 0;
-    if (MulOverflow(b, hk, &bh) || MulOverflow(bh, nt, &taskNum) || MulOverflow(taskNum, bt * bt, &scoreElems) ||
-        MulOverflow(scoreElems, sizeof(float), &scoreBytes) || taskNum == 0) {
-        return ge::GRAPH_FAILED;
-    }
-    scoreBytes = AlignUp(scoreBytes, kWorkspaceAlign);
-
     uint64_t aicNum = kDefaultAicNum;
     uint64_t aivNum = kDefaultAivNum;
     uint64_t libApiWorkspace = kDefaultLibApiWorkspace;
+    NpuArch npuArch = NpuArch::DAV_2201;
+    bool catlassScoreArchSupported = false;
     auto platformInfo = context->GetPlatformInfo();
     if (platformInfo != nullptr) {
         platform_ascendc::PlatformAscendC platform(platformInfo);
         aicNum = static_cast<uint64_t>(platform.GetCoreNumAic());
         aivNum = static_cast<uint64_t>(platform.GetCoreNumAiv());
         libApiWorkspace = static_cast<uint64_t>(platform.GetLibApiWorkSpaceSize());
+        npuArch = platform.GetCurNpuArch();
+        catlassScoreArchSupported = !fusedCumsumKkt && IsCatlassScoreArchSupported(npuArch);
     }
     if (aicNum == 0) {
         aicNum = kDefaultAicNum;
@@ -247,10 +287,32 @@ ge::graphStatus TilingFunc(gert::TilingContext *context)
         aivNum = kDefaultAivNum;
     }
 
-    const uint64_t usedAicNum = std::max<uint64_t>(1, std::min(taskNum, aicNum));
-    const uint64_t pairedAivNum = std::min<uint64_t>(aivNum, usedAicNum * 2);
-    const uint64_t usedAivNum = std::max<uint64_t>(1, std::min<uint64_t>(std::max<uint64_t>(taskNum, pairedAivNum),
-                                                                        pairedAivNum));
+    uint64_t bh = 0;
+    uint64_t scoreTaskNum = 0;
+    // KKT scores are key-head aligned; the kernel epilogue expands each score to hvPerHk value heads.
+    if (MulOverflow(b, hk, &bh) || MulOverflow(bh, nt, &scoreTaskNum) || scoreTaskNum == 0) {
+        return ge::GRAPH_FAILED;
+    }
+    uint64_t scoreBlockTaskNum = 0;
+    if (MulOverflow(scoreTaskNum, ScoreRowBlockCount(bt, npuArch), &scoreBlockTaskNum) || scoreBlockTaskNum == 0) {
+        return ge::GRAPH_FAILED;
+    }
+
+    const uint64_t pairableAicNum = std::min<uint64_t>(aicNum, aivNum / 2);
+    const bool useCatlassScore =
+        !fusedCumsumKkt && catlassScoreArchSupported && pairableAicNum > 0 &&
+        bt >= static_cast<uint64_t>(NsChunkScaledDotKkt::CATLASS_SCORE_MIN_BT) && (k % 16) == 0;
+    if (catlassScoreArchSupported && !useCatlassScore) {
+        return ge::GRAPH_FAILED;
+    }
+    const uint64_t aicTaskNum = useCatlassScore ? scoreBlockTaskNum : scoreTaskNum;
+    const uint64_t usedAicNum = std::max<uint64_t>(1, std::min(aicTaskNum, useCatlassScore ? pairableAicNum : aicNum));
+    const uint64_t pairedAivNum = useCatlassScore ? usedAicNum * 2 : std::min<uint64_t>(aivNum, usedAicNum * 2);
+    const uint64_t usedAivNum =
+        useCatlassScore
+            ? pairedAivNum
+            : std::max<uint64_t>(1, std::min<uint64_t>(std::max<uint64_t>(scoreTaskNum, pairedAivNum), pairedAivNum));
+    const uint64_t scoreGroupBatch = ScoreGroupBatch(scoreBlockTaskNum, usedAicNum, bt, t, isVarlen, useCatlassScore);
     uint32_t blockDim = static_cast<uint32_t>(usedAicNum);
     if (platformInfo != nullptr) {
         platform_ascendc::PlatformAscendC platform(platformInfo);
@@ -261,6 +323,25 @@ ge::graphStatus TilingFunc(gert::TilingContext *context)
     if (blockDim == 0) {
         return ge::GRAPH_FAILED;
     }
+    uint64_t scoreSlots = 0;
+    uint64_t scoreElems = 0;
+    uint64_t scoreBytes = 0;
+    if (fusedCumsumKkt) {
+        if (MulOverflow(scoreTaskNum, bt * bt, &scoreElems) ||
+            MulOverflow(scoreElems, sizeof(float), &scoreBytes)) {
+            return ge::GRAPH_FAILED;
+        }
+    } else {
+        if (MulOverflow(usedAivNum,
+                        static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_WORKSPACE_BUFFER_NUM) *
+                            static_cast<uint64_t>(NsChunkScaledDotKkt::SCORE_WORKSPACE_HEAD_BATCH),
+                        &scoreSlots) ||
+            MulOverflow(scoreSlots, bt * bt, &scoreElems) ||
+            MulOverflow(scoreElems, sizeof(float), &scoreBytes)) {
+            return ge::GRAPH_FAILED;
+        }
+    }
+    scoreBytes = AlignUp(scoreBytes, kWorkspaceAlign);
 
     ChunkScaledDotKktTilingData tiling;
     tiling.set_B(b);
@@ -271,11 +352,13 @@ ge::graphStatus TilingFunc(gert::TilingContext *context)
     tiling.set_K(k);
     tiling.set_BT(bt);
     tiling.set_NT(nt);
-    tiling.set_taskNum(taskNum);
+    tiling.set_taskNum(scoreTaskNum);
     tiling.set_usedAicNum(usedAicNum);
     tiling.set_usedAivNum(usedAivNum);
     tiling.set_btAlign(AlignUp(bt, kFp32BlockElems));
     tiling.set_isVarlen(isVarlen);
+    tiling.set_useCatlassScore(useCatlassScore ? 1 : 0);
+    tiling.set_scoreGroupBatch(scoreGroupBatch);
     tiling.set_scoreWorkspaceBytes(scoreBytes);
     if (BuildCubeTiling(bt, k, kDtype, tiling) != ge::GRAPH_SUCCESS) {
         return ge::GRAPH_FAILED;
@@ -295,32 +378,19 @@ ge::graphStatus TilingFunc(gert::TilingContext *context)
     return ge::GRAPH_SUCCESS;
 }
 
-struct ChunkScaledDotKktCompileInfo {};
-
-ge::graphStatus TilingParse(gert::TilingParseContext *context)
+ge::graphStatus TilingFunc(gert::TilingContext *context)
 {
-    return context == nullptr ? ge::GRAPH_FAILED : ge::GRAPH_SUCCESS;
+    return TilingFuncImpl(context, false);
 }
-
-IMPL_OP_OPTILING(ChunkScaledDotKkt)
-    .Tiling(TilingFunc)
-    .TilingParse<ChunkScaledDotKktCompileInfo>(TilingParse);
 
 ge::graphStatus TilingFusedCumsumKkt(gert::TilingContext *context)
 {
-    if (context == nullptr || context->GetInputShape(kInputKIndex) == nullptr ||
-        context->GetInputShape(kInputGIndex) == nullptr) {
-        return ge::GRAPH_FAILED;
-    }
-    const gert::Shape &kShape = context->GetInputShape(kInputKIndex)->GetStorageShape();
-    const gert::Shape &gShape = context->GetInputShape(kInputGIndex)->GetStorageShape();
-    if (kShape.GetDimNum() != 4 || gShape.GetDimNum() != 3 || kShape.GetDim(1) != gShape.GetDim(1)) {
-        return ge::GRAPH_FAILED;
-    }
-    return TilingFunc(context);
+    return TilingFuncImpl(context, true);
 }
 
+IMPL_OP_OPTILING(ChunkScaledDotKkt)
+    .Tiling(TilingFunc);
+
 IMPL_OP_OPTILING(ChunkCumsumKkt)
-    .Tiling(TilingFusedCumsumKkt)
-    .TilingParse<ChunkScaledDotKktCompileInfo>(TilingParse);
+    .Tiling(TilingFusedCumsumKkt);
 }  // namespace optiling
