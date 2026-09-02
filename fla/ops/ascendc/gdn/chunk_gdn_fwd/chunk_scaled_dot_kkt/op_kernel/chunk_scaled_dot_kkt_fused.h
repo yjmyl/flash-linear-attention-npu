@@ -8,7 +8,7 @@
 
 struct ChunkScaledDotKktTilingData;
 
-namespace NsChunkScaledDotKkt {
+namespace NsChunkScaledDotKktFused {
 using namespace AscendC;
 
 constexpr int32_t BUFFER_NUM = 1;
@@ -596,6 +596,6 @@ private:
     int64_t isVarlen_ = 0;
     bool fusedCumsum_ = false;
 };
-}  // namespace NsChunkScaledDotKkt
+}  // namespace NsChunkScaledDotKktFused
 
 #endif  // CHUNK_SCALED_DOT_KKT_FUSED_H

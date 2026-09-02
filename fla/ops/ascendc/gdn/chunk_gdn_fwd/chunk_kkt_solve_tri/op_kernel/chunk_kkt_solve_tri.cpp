@@ -83,7 +83,7 @@ __global__ __aicore__ void chunk_kkt_solve_tri(GM_ADDR k,
     }
     if ASCEND_IS_AIV {
         TPipe kktPipe;
-        NsChunkScaledDotKkt::ChunkScaledDotKktFused<DTYPE_K, DTYPE_K> kkt;
+        NsChunkScaledDotKktFused::ChunkScaledDotKktFused<DTYPE_K, DTYPE_K> kkt;
         kkt.Init(k, g, beta, cuSeqlens, chunkIndices, aWorkspace, scoreWorkspace,
                  tilingData.B, tilingData.Hk, tilingData.Hv, tilingData.hvPerHk,
                  tilingData.T, tilingData.K, tilingData.BT, tilingData.NT,

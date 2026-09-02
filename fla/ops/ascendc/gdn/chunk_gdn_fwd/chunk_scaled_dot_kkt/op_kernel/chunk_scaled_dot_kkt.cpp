@@ -1,4 +1,5 @@
 #include "chunk_scaled_dot_kkt.h"
+#include "chunk_scaled_dot_kkt_fused.h"
 #include "chunk_scaled_dot_kkt_tiling_key.h"
 
 using namespace AscendC;
@@ -17,6 +18,19 @@ __global__ __aicore__ void chunk_scaled_dot_kkt(GM_ADDR k,
     GET_TILING_DATA_WITH_STRUCT(ChunkScaledDotKktTilingData, tilingData, tiling);
 
     GM_ADDR userWorkspace = GetUserWorkspace(workspace);
+    if (tilingData.hvPerHk != 1) {
+        TPipe pipe;
+        NsChunkScaledDotKktFused::ChunkScaledDotKktFused<DTYPE_K> op;
+        REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), op.scoreMatmul, &tilingData.cubeTilingData);
+        op.Init(k, g, beta, cuSeqlens, chunkIndices, A, userWorkspace, tilingData.B, tilingData.Hk,
+                tilingData.Hv, tilingData.hvPerHk, tilingData.T, tilingData.K, tilingData.BT, tilingData.NT,
+                tilingData.taskNum, tilingData.usedAicNum, tilingData.usedAivNum, tilingData.btAlign,
+                tilingData.isVarlen, &pipe);
+        if ASCEND_IS_AIV {
+            op.ProcessAiv();
+        }
+        return;
+    }
 
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
     if ASCEND_IS_AIC {

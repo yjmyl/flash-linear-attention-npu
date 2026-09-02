@@ -18,7 +18,7 @@ __global__ __aicore__ void chunk_cumsum_kkt(GM_ADDR k,
     GET_TILING_DATA_WITH_STRUCT(ChunkScaledDotKktTilingData, tilingData, tiling);
 
     TPipe pipe;
-    NsChunkScaledDotKkt::ChunkScaledDotKktFused<DTYPE_K> op;
+    NsChunkScaledDotKktFused::ChunkScaledDotKktFused<DTYPE_K> op;
     REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), op.scoreMatmul, &tilingData.cubeTilingData);
     GM_ADDR scoreWorkspace = GetUserWorkspace(workspace);
     op.InitFusedCumsum(k, g, beta, cuSeqlens, chunkIndices, gCumsum, A, scoreWorkspace,

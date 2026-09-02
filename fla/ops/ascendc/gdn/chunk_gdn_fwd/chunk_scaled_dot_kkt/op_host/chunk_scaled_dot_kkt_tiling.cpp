@@ -289,7 +289,7 @@ ge::graphStatus TilingFuncImpl(gert::TilingContext *context, bool fusedCumsumKkt
 
     uint64_t bh = 0;
     uint64_t scoreTaskNum = 0;
-    // KKT scores are key-head aligned; the kernel epilogue expands each score to hvPerHk value heads.
+    // This branch keeps the public Hk-aligned output contract. Hv-expanded inputs retain the legacy kernel.
     if (MulOverflow(b, hk, &bh) || MulOverflow(bh, nt, &scoreTaskNum) || scoreTaskNum == 0) {
         return ge::GRAPH_FAILED;
     }
@@ -299,10 +299,11 @@ ge::graphStatus TilingFuncImpl(gert::TilingContext *context, bool fusedCumsumKkt
     }
 
     const uint64_t pairableAicNum = std::min<uint64_t>(aicNum, aivNum / 2);
+    const bool useLegacyStandalone = !fusedCumsumKkt && hvPerHk != 1;
     const bool useCatlassScore =
-        !fusedCumsumKkt && catlassScoreArchSupported && pairableAicNum > 0 &&
+        !fusedCumsumKkt && !useLegacyStandalone && catlassScoreArchSupported && pairableAicNum > 0 &&
         bt >= static_cast<uint64_t>(NsChunkScaledDotKkt::CATLASS_SCORE_MIN_BT) && (k % 16) == 0;
-    if (catlassScoreArchSupported && !useCatlassScore) {
+    if (catlassScoreArchSupported && !useLegacyStandalone && !useCatlassScore) {
         return ge::GRAPH_FAILED;
     }
     const uint64_t aicTaskNum = useCatlassScore ? scoreBlockTaskNum : scoreTaskNum;
@@ -326,7 +327,7 @@ ge::graphStatus TilingFuncImpl(gert::TilingContext *context, bool fusedCumsumKkt
     uint64_t scoreSlots = 0;
     uint64_t scoreElems = 0;
     uint64_t scoreBytes = 0;
-    if (fusedCumsumKkt) {
+    if (fusedCumsumKkt || useLegacyStandalone) {
         if (MulOverflow(scoreTaskNum, bt * bt, &scoreElems) ||
             MulOverflow(scoreElems, sizeof(float), &scoreBytes)) {
             return ge::GRAPH_FAILED;

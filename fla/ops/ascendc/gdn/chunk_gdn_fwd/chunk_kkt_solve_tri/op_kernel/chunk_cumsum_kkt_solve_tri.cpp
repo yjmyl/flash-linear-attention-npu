@@ -103,7 +103,7 @@ __global__ __aicore__ void chunk_cumsum_kkt_solve_tri(GM_ADDR k,
     }
     if ASCEND_IS_AIV {
         TPipe kktPipe;
-        NsChunkScaledDotKkt::ChunkScaledDotKktFused<DTYPE_K, DTYPE_K> kkt;
+        NsChunkScaledDotKktFused::ChunkScaledDotKktFused<DTYPE_K, DTYPE_K> kkt;
         kkt.InitFusedCumsum(
             k, g, beta, cuSeqlens, chunkIndices, gCumsum, aWorkspace, scoreWorkspace,
             tilingData.B, tilingData.Hk, tilingData.Hv, tilingData.hvPerHk,
