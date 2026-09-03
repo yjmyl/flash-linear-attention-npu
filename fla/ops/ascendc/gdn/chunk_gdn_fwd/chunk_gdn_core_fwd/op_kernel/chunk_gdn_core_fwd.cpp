@@ -17,7 +17,6 @@
 #undef GDN_CHUNK_LOCAL_CUMSUM_IMPL_ONLY
 
 #include "../../chunk_scaled_dot_kkt/op_kernel/chunk_scaled_dot_kkt.h"
-#include "../../chunk_scaled_dot_kkt/op_kernel/chunk_scaled_dot_kkt_tiling_key.h"
 
 namespace GDN {
 namespace {
@@ -27,6 +26,10 @@ constexpr uint32_t OWNER_V_TO_MTE3_EVENT = 1;
 constexpr uint32_t OWNER_MTE3_TO_V_EVENT = 2;
 constexpr uint32_t UB_ALIGNMENT = 32;
 constexpr uint32_t PHASE6_TILING_ALIGNMENT = 8;
+// ChunkScaledDotKkt's private CHUNK_KEY contract maps BT64 to key 0. Do not
+// include its standalone tiling-key declaration here: that declaration would
+// incorrectly mark the enclosing ChunkGdnCoreFwd entry as a template kernel.
+constexpr uint32_t PHASE6_KKT_BT64_KEY = 0;
 constexpr uint64_t PHASE6_SOLVE_DONE_FLAG = 5;
 #if defined(__CCE_AICORE__) && __CCE_AICORE__ == 310
 constexpr AscendC::SyncAllConfig PHASE6_HO_SYNC_CONFIG = {PIPE_MTE3, PIPE_MTE2};
@@ -262,7 +265,7 @@ __aicore__ inline void RunPipelinedAbc(GM_ADDR k, GM_ADDR rawG, GM_ADDR beta, GM
     }
 
     AscendC::TPipe kktPipe;
-    NsChunkScaledDotKkt::ChunkScaledDotKkt<InputT, CHUNK_SCALED_DOT_KKT_BT64, InputT> kkt;
+    NsChunkScaledDotKkt::ChunkScaledDotKkt<InputT, PHASE6_KKT_BT64_KEY, InputT> kkt;
     kkt.Init(k, gCumsumBht, beta, cuSeqlens, chunkIndices, aWorkspace, scoreWorkspace, abc.B, abc.Hk, abc.Hv,
              abc.hvPerHk, abc.T, abc.K, abc.BT, abc.NT, abc.B * abc.Hk * abc.NT, abc.usedAicNum, abc.usedAivNum,
              abc.btAlign, abc.isVarlen, 1, abc.scoreGroupBatch, &kktPipe);
