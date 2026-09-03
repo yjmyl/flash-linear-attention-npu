@@ -12,6 +12,13 @@
 #include "../../chunk_kkt_solve_tri/op_kernel/chunk_cumsum_kkt_solve_tri.cpp"
 #undef GDN_CHUNK_CUMSUM_KKT_SOLVE_IMPL_ONLY
 
+#define GDN_CHUNK_LOCAL_CUMSUM_IMPL_ONLY
+#include "../../chunk_local_cumsum/op_kernel/chunk_local_cumsum.cpp"
+#undef GDN_CHUNK_LOCAL_CUMSUM_IMPL_ONLY
+
+#include "../../chunk_scaled_dot_kkt/op_kernel/chunk_scaled_dot_kkt.h"
+#include "../../chunk_scaled_dot_kkt/op_kernel/chunk_scaled_dot_kkt_tiling_key.h"
+
 namespace GDN {
 namespace {
 
@@ -64,6 +71,8 @@ __aicore__ inline void CopyAbcTiling(
     dst.usedAivNum = src->usedAivNum;
     dst.btAlign = src->btAlign;
     dst.isVarlen = src->isVarlen;
+    dst.usePipelinedAbc = src->usePipelinedAbc;
+    dst.scoreGroupBatch = src->scoreGroupBatch;
     dst.scoreWorkspaceBytes = src->scoreWorkspaceBytes;
     dst.aWorkspaceBytes = src->aWorkspaceBytes;
     dst.solveWorkspacePerCoreBytes = src->solveWorkspacePerCoreBytes;
@@ -211,6 +220,66 @@ __aicore__ inline void WritePublicCumsumRows(
     }
 }
 
+__aicore__ inline ChunkLocalCumsumTilingData MakePhase6CumsumTiling(const ChunkGdnCoreFwdAbcTiling &abc)
+{
+    ChunkLocalCumsumTilingData tiling{};
+    tiling.b = static_cast<int64_t>(abc.B);
+    tiling.t = static_cast<int64_t>(abc.T);
+    tiling.h = static_cast<int64_t>(abc.Hv);
+    tiling.chunkSize = static_cast<int64_t>(abc.BT);
+    tiling.blockT = static_cast<int64_t>(abc.BT);
+    tiling.numBlocks = static_cast<int64_t>(abc.NT);
+    tiling.seqNum = static_cast<int64_t>(abc.B);
+    tiling.totalElements = static_cast<int64_t>(abc.B * abc.Hv * abc.T);
+    tiling.isVarlen = 0;
+    tiling.reverse = 0;
+    tiling.headFirst = 1;
+    tiling.optimizedHeadFirst = 1;
+    tiling.varlenSeqTask = 0;
+    tiling.enableCumSumFastPath = 1;
+    tiling.fastBufferLimit = 0;
+    tiling.inputDtype = 0;
+    tiling.outputDtype = 0;
+    tiling.scale = 1.0f;
+    return tiling;
+}
+
+template <typename InputT>
+__aicore__ inline void RunPipelinedAbc(GM_ADDR k, GM_ADDR rawG, GM_ADDR beta, GM_ADDR cuSeqlens, GM_ADDR chunkIndices,
+                                       GM_ADDR gCumsumBht, GM_ADDR aWorkspace, GM_ADDR scoreWorkspace,
+                                       const ChunkGdnCoreFwdAbcTiling &abc)
+{
+    if ASCEND_IS_AIV {
+        ChunkLocalCumsumTilingData cumsumTiling = MakePhase6CumsumTiling(abc);
+        ChunkLocalCumsumKernel<float, float> cumsum;
+        cumsum.Init(rawG, cuSeqlens, chunkIndices, gCumsumBht, &cumsumTiling);
+        cumsum.ConfigureWorkerRange(static_cast<int64_t>(AscendC::GetBlockIdx()), static_cast<int64_t>(abc.usedAivNum));
+        cumsum.Process();
+        cumsum.ResetPipe();
+        // KKT task ownership differs from cumsum ownership. Close the
+        // cross-AIV GM RAW edge before any KKT epilogue reads gCumsumBht.
+        AscendC::SyncAll<true>();
+    }
+
+    AscendC::TPipe kktPipe;
+    NsChunkScaledDotKkt::ChunkScaledDotKkt<InputT, CHUNK_SCALED_DOT_KKT_BT64, InputT> kkt;
+    kkt.Init(k, gCumsumBht, beta, cuSeqlens, chunkIndices, aWorkspace, scoreWorkspace, abc.B, abc.Hk, abc.Hv,
+             abc.hvPerHk, abc.T, abc.K, abc.BT, abc.NT, abc.B * abc.Hk * abc.NT, abc.usedAicNum, abc.usedAivNum,
+             abc.btAlign, abc.isVarlen, 1, abc.scoreGroupBatch, &kktPipe);
+    if ASCEND_IS_AIC {
+        kkt.ProcessAic();
+    }
+    if ASCEND_IS_AIV {
+        kkt.ProcessAiv();
+    }
+    kktPipe.Reset();
+
+    // Score row blocks are distributed independently from SolveTri tiles.
+    // The KKT final drain closes each ring slot; this mixed barrier closes
+    // the cross-pair A RAW edge and makes subsequent flag reuse unambiguous.
+    AscendC::SyncAll<false>();
+}
+
 template <typename InputT, typename TileShapes>
 __aicore__ inline void RunPhase6(
     GM_ADDR q, GM_ADDR k, GM_ADDR v, GM_ADDR beta, GM_ADDR rawG, GM_ADDR gk,
@@ -234,22 +303,24 @@ __aicore__ inline void RunPhase6(
     GM_ADDR solveWorkspace =
         solveWorkspaceBase + coreGroup * abc.solveWorkspacePerCoreBytes;
 
-    if ASCEND_IS_AIC {
-        NsChunkKktCube::ChunkKktCube<InputT> kktCube;
-        kktCube.Process(k, cuSeqlens, chunkIndices, scoreWorkspace, &abc);
-        AscendC::CrossCoreSetFlag<0x2, PIPE_FIX>(SCORE_READY_FLAG);
-    }
-    if ASCEND_IS_AIV {
-        AscendC::TPipe kktPipe;
-        NsChunkScaledDotKktFused::ChunkScaledDotKktFused<InputT, InputT> kkt;
-        kkt.InitFusedCumsum(
-            k, rawG, beta, cuSeqlens, chunkIndices, gCumsumBht, aWorkspace,
-            scoreWorkspace, abc.B, abc.Hk, abc.Hv, abc.hvPerHk, abc.T, abc.K,
-            abc.BT, abc.NT, abc.taskNum, abc.usedAicNum, abc.usedAivNum,
-            abc.btAlign, abc.isVarlen, &kktPipe);
-        AscendC::CrossCoreWaitFlag(SCORE_READY_FLAG);
-        kkt.ProcessEpilogueForSolve(abc.tilesPerCore);
-        kktPipe.Reset();
+    if (abc.usePipelinedAbc != 0) {
+        RunPipelinedAbc<InputT>(k, rawG, beta, cuSeqlens, chunkIndices, gCumsumBht, aWorkspace, scoreWorkspace, abc);
+    } else {
+        if ASCEND_IS_AIC {
+            NsChunkKktCube::ChunkKktCube<InputT> kktCube;
+            kktCube.Process(k, cuSeqlens, chunkIndices, scoreWorkspace, &abc);
+            AscendC::CrossCoreSetFlag<0x2, PIPE_FIX>(SCORE_READY_FLAG);
+        }
+        if ASCEND_IS_AIV {
+            AscendC::TPipe kktPipe;
+            NsChunkScaledDotKktFused::ChunkScaledDotKktFused<InputT, InputT> kkt;
+            kkt.InitFusedCumsum(k, rawG, beta, cuSeqlens, chunkIndices, gCumsumBht, aWorkspace, scoreWorkspace, abc.B,
+                                abc.Hk, abc.Hv, abc.hvPerHk, abc.T, abc.K, abc.BT, abc.NT, abc.taskNum, abc.usedAicNum,
+                                abc.usedAivNum, abc.btAlign, abc.isVarlen, &kktPipe);
+            AscendC::CrossCoreWaitFlag(SCORE_READY_FLAG);
+            kkt.ProcessEpilogueForSolve(abc.tilesPerCore);
+            kktPipe.Reset();
+        }
     }
 
     if (abc.BT == 64) {

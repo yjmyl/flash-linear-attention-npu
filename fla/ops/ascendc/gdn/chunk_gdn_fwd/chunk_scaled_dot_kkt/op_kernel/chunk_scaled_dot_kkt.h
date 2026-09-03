@@ -3,6 +3,7 @@
 
 #include "kernel_operator.h"
 #include "kernel_tiling/kernel_tiling.h"
+#include <type_traits>
 #if !defined(__CCE_AICORE__) || __CCE_AICORE__ != 310
 #include "lib/matmul_intf.h"
 #endif
@@ -63,7 +64,7 @@ using KktArchTag = Catlass::Arch::AtlasA2;
 using KktScoreDispatchPolicy = Catlass::Gemm::MmadPingpongTlaMulti<KktArchTag, true, false>;
 using KktInt128 = tla::Int<128>;
 
-template <typename KType, uint32_t CHUNK_KEY>
+template <typename KType, uint32_t CHUNK_KEY, typename OutputType = float>
 class ChunkScaledDotKkt {
     struct TaskMeta {
         int64_t b = 0;
@@ -126,7 +127,7 @@ public:
         kGm.SetGlobalBuffer((__gm__ KType *)k, B_ * Hk_ * T_ * K_);
         gGm.SetGlobalBuffer((__gm__ float *)g, B_ * Hv_ * T_);
         betaGm.SetGlobalBuffer((__gm__ float *)beta, B_ * Hv_ * T_);
-        aGm.SetGlobalBuffer((__gm__ float *)a, B_ * Hv_ * T_ * BT_);
+        aGm.SetGlobalBuffer((__gm__ OutputType *)a, B_ * Hv_ * T_ * BT_);
         scoreGm.SetGlobalBuffer((__gm__ float *)scoreWorkspace,
                                 usedAivNum_ * SCORE_WORKSPACE_BUFFER_NUM * SCORE_WORKSPACE_HEAD_BATCH * BT_ * BT_);
         if (isVarlen_ != 0) {
@@ -142,11 +143,17 @@ public:
                                   static_cast<uint32_t>(ScoreRowBlockSize() * btAlign_ * sizeof(float)));
                 pipe_->InitBuffer(outTileBuf_,
                                   static_cast<uint32_t>(ScoreRowBlockSize() * btAlign_ * sizeof(float)));
+                if constexpr (!std::is_same_v<OutputType, float>) {
+                    pipe_->InitBuffer(typedOutTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(OutputType)));
+                }
                 pipe_->InitBuffer(gateBuf_, BRCB_ROWS * btAlign_ * sizeof(float));
                 pipe_->InitBuffer(rowBrcbBuf_, BRCB_ROWS * FP32_BLOCK_ELEMS * sizeof(float));
             } else {
                 pipe_->InitBuffer(scoreTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(float)));
                 pipe_->InitBuffer(outTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(float)));
+                if constexpr (!std::is_same_v<OutputType, float>) {
+                    pipe_->InitBuffer(typedOutTileBuf_, static_cast<uint32_t>(BT_ * btAlign_ * sizeof(OutputType)));
+                }
                 pipe_->InitBuffer(gateBuf_, BRCB_ROWS * btAlign_ * sizeof(float));
                 pipe_->InitBuffer(rowBrcbBuf_, BRCB_ROWS * FP32_BLOCK_ELEMS * sizeof(float));
             }
@@ -829,13 +836,35 @@ private:
                                        LocalTensor<float> outTileLocal,
                                        int64_t valid)
     {
+        if constexpr (!std::is_same_v<OutputType, float>) {
+            LocalTensor<OutputType> typedOut = typedOutTileBuf_.Get<OutputType>();
+            Cast(typedOut, outTileLocal, RoundMode::CAST_RINT, static_cast<uint32_t>(valid * btAlign_));
+            PipeBarrier<PIPE_V>();
+            CopyTypedOutTile(outBaseOffset, outRowStride, typedOut, valid);
+        } else {
+            WaitVToMte3();
+            DataCopyExtParams outParams;
+            outParams.blockCount = static_cast<uint16_t>(valid);
+            outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
+            outParams.srcStride =
+                static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) / UB_ALIGN_BYTES);
+            outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
+            outParams.rsv = 0;
+            DataCopyPad(aGm[outBaseOffset], outTileLocal, outParams);
+            WaitMte3ToV();
+        }
+    }
+
+    __aicore__ inline void CopyTypedOutTile(int64_t outBaseOffset, int64_t outRowStride,
+                                            LocalTensor<OutputType> outTileLocal, int64_t valid)
+    {
         WaitVToMte3();
         DataCopyExtParams outParams;
         outParams.blockCount = static_cast<uint16_t>(valid);
-        outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
-        outParams.srcStride = static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) /
-                                                    UB_ALIGN_BYTES);
-        outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
+        outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(OutputType)));
+        outParams.srcStride =
+            static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(OutputType)) / UB_ALIGN_BYTES);
+        outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(OutputType)));
         outParams.rsv = 0;
         DataCopyPad(aGm[outBaseOffset], outTileLocal, outParams);
         WaitMte3ToV();
@@ -848,21 +877,28 @@ private:
                                             int64_t subBlockIdx,
                                             int64_t subBlockNum)
     {
-        WaitVToMte3();
-        const int64_t firstRowBase = subBlockIdx * static_cast<int64_t>(BRCB_ROWS);
-        const int64_t rowStep = subBlockNum * static_cast<int64_t>(BRCB_ROWS);
-        for (int64_t rowBase = firstRowBase; rowBase < valid; rowBase += rowStep) {
-            const int64_t rows = MinI64(static_cast<int64_t>(BRCB_ROWS), valid - rowBase);
-            DataCopyExtParams outParams;
-            outParams.blockCount = static_cast<uint16_t>(rows);
-            outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
-            outParams.srcStride = static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) /
-                                                        UB_ALIGN_BYTES);
-            outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
-            outParams.rsv = 0;
-            DataCopyPad(aGm[outBaseOffset + rowBase * outRowStride], outTileLocal[rowBase * btAlign_], outParams);
+        if constexpr (!std::is_same_v<OutputType, float>) {
+            LocalTensor<OutputType> typedOut = typedOutTileBuf_.Get<OutputType>();
+            Cast(typedOut, outTileLocal, RoundMode::CAST_RINT, static_cast<uint32_t>(valid * btAlign_));
+            PipeBarrier<PIPE_V>();
+            CopyTypedOutScoreBlockRows(outBaseOffset, outRowStride, typedOut, 0, valid, subBlockIdx, subBlockNum);
+        } else {
+            WaitVToMte3();
+            const int64_t firstRowBase = subBlockIdx * static_cast<int64_t>(BRCB_ROWS);
+            const int64_t rowStep = subBlockNum * static_cast<int64_t>(BRCB_ROWS);
+            for (int64_t rowBase = firstRowBase; rowBase < valid; rowBase += rowStep) {
+                const int64_t rows = MinI64(static_cast<int64_t>(BRCB_ROWS), valid - rowBase);
+                DataCopyExtParams outParams;
+                outParams.blockCount = static_cast<uint16_t>(rows);
+                outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
+                outParams.srcStride =
+                    static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) / UB_ALIGN_BYTES);
+                outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
+                outParams.rsv = 0;
+                DataCopyPad(aGm[outBaseOffset + rowBase * outRowStride], outTileLocal[rowBase * btAlign_], outParams);
+            }
+            WaitMte3ToV();
         }
-        WaitMte3ToV();
     }
 
     __aicore__ inline void CopyOutScoreBlockRows(int64_t outBaseOffset,
@@ -873,6 +909,37 @@ private:
                                                  int64_t subBlockIdx,
                                                  int64_t subBlockNum)
     {
+        if constexpr (!std::is_same_v<OutputType, float>) {
+            LocalTensor<OutputType> typedOut = typedOutTileBuf_.Get<OutputType>();
+            Cast(typedOut, outTileLocal, RoundMode::CAST_RINT, static_cast<uint32_t>(rowCount * btAlign_));
+            PipeBarrier<PIPE_V>();
+            CopyTypedOutScoreBlockRows(outBaseOffset, outRowStride, typedOut, rowBegin, rowCount, subBlockIdx,
+                                       subBlockNum);
+        } else {
+            WaitVToMte3();
+            const int64_t rowEnd = rowBegin + rowCount;
+            const int64_t firstRowBase = rowBegin + subBlockIdx * static_cast<int64_t>(BRCB_ROWS);
+            const int64_t rowStep = subBlockNum * static_cast<int64_t>(BRCB_ROWS);
+            for (int64_t rowBase = firstRowBase; rowBase < rowEnd; rowBase += rowStep) {
+                const int64_t rows = MinI64(static_cast<int64_t>(BRCB_ROWS), rowEnd - rowBase);
+                DataCopyExtParams outParams;
+                outParams.blockCount = static_cast<uint16_t>(rows);
+                outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
+                outParams.srcStride =
+                    static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) / UB_ALIGN_BYTES);
+                outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
+                outParams.rsv = 0;
+                DataCopyPad(aGm[outBaseOffset + rowBase * outRowStride], outTileLocal[(rowBase - rowBegin) * btAlign_],
+                            outParams);
+            }
+            WaitMte3ToV();
+        }
+    }
+
+    __aicore__ inline void CopyTypedOutScoreBlockRows(int64_t outBaseOffset, int64_t outRowStride,
+                                                      LocalTensor<OutputType> outTileLocal, int64_t rowBegin,
+                                                      int64_t rowCount, int64_t subBlockIdx, int64_t subBlockNum)
+    {
         WaitVToMte3();
         const int64_t rowEnd = rowBegin + rowCount;
         const int64_t firstRowBase = rowBegin + subBlockIdx * static_cast<int64_t>(BRCB_ROWS);
@@ -881,10 +948,11 @@ private:
             const int64_t rows = MinI64(static_cast<int64_t>(BRCB_ROWS), rowEnd - rowBase);
             DataCopyExtParams outParams;
             outParams.blockCount = static_cast<uint16_t>(rows);
-            outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(float)));
-            outParams.srcStride = static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(float)) /
-                                                        UB_ALIGN_BYTES);
-            outParams.dstStride = static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(float)));
+            outParams.blockLen = static_cast<uint32_t>(BT_ * static_cast<int64_t>(sizeof(OutputType)));
+            outParams.srcStride =
+                static_cast<uint32_t>((btAlign_ - BT_) * static_cast<int64_t>(sizeof(OutputType)) / UB_ALIGN_BYTES);
+            outParams.dstStride =
+                static_cast<uint32_t>((outRowStride - BT_) * static_cast<int64_t>(sizeof(OutputType)));
             outParams.rsv = 0;
             DataCopyPad(aGm[outBaseOffset + rowBase * outRowStride],
                         outTileLocal[(rowBase - rowBegin) * btAlign_], outParams);
@@ -993,13 +1061,14 @@ private:
     TQue<QuePosition::VECIN, BUFFER_NUM> betaQueue_;
     TBuf<TPosition::VECCALC> scoreTileBuf_;
     TBuf<TPosition::VECCALC> outTileBuf_;
+    TBuf<TPosition::VECCALC> typedOutTileBuf_;
     TBuf<TPosition::VECCALC> gateBuf_;
     TBuf<TPosition::VECCALC> rowBrcbBuf_;
 
     GlobalTensor<KType> kGm;
     GlobalTensor<float> gGm;
     GlobalTensor<float> betaGm;
-    GlobalTensor<float> aGm;
+    GlobalTensor<OutputType> aGm;
     GlobalTensor<float> scoreGm;
     GlobalTensor<int64_t> cuSeqlensGm;
     GlobalTensor<int64_t> chunkIndicesGm;

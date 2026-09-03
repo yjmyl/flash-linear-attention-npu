@@ -8,6 +8,7 @@
 #include "../../chunk_gated_delta_rule_fwd_h/op_host/chunk_gated_delta_rule_fwd_h_tiling.h"
 #include "../../chunk_gated_delta_rule_fwd_h/op_kernel/chunk_gated_delta_rule_fwd_h_struct.h"
 #include "../../chunk_recompute_wu_fwd_ho/op_kernel/chunk_recompute_wu_fwd_ho_struct.h"
+#include "../../chunk_scaled_dot_kkt/op_kernel/chunk_scaled_dot_kkt_common.h"
 #include "../op_kernel/chunk_gdn_core_fwd_struct.h"
 
 #include "securec.h"
@@ -221,6 +222,8 @@ ge::graphStatus Tiling4ChunkGdnCoreFwd(gert::TilingContext *context)
     const uint64_t aicCoreNum = std::max<uint64_t>(1, platform.GetCoreNumAic());
     const uint64_t aivCoreNum = std::max<uint64_t>(1, platform.GetCoreNumAiv());
     const uint64_t systemWorkspace = platform.GetLibApiWorkSpaceSize();
+    const NpuArch npuArch = platform.GetCurNpuArch();
+    const bool isAscend910B = platform.GetSocVersion() == platform_ascendc::SocVersion::ASCEND910B;
     size_t *workspaceSizes = context->GetWorkspaceSizes(1);
     OP_CHECK_NULL_WITH_CONTEXT(context, workspaceSizes);
     OP_CHECK_IF(workspaceSizes[0] < systemWorkspace,
@@ -244,8 +247,23 @@ ge::graphStatus Tiling4ChunkGdnCoreFwd(gert::TilingContext *context)
     abc.usedAivNum = std::min<uint64_t>(aivCoreNum, aicCoreNum * 2);
     abc.btAlign = AlignUp(abc.BT, FP32_BLOCK_ELEMS);
     abc.isVarlen = isVarlen ? 1 : 0;
-    abc.scoreWorkspaceBytes =
-        AlignUp(abc.taskNum * abc.BT * abc.BT * sizeof(float), WORKSPACE_ALIGNMENT);
+    const bool usePipelinedAbc =
+        isAscend910B && npuArch == NpuArch::DAV_2201 && !isVarlen && abc.BT == CHUNK_64 && abc.Hk == abc.Hv;
+    abc.usePipelinedAbc = usePipelinedAbc ? 1 : 0;
+    if (usePipelinedAbc) {
+        const uint64_t scoreBlockTaskNum =
+            abc.B * abc.Hk * abc.NT * CeilDiv(abc.BT, NsChunkScaledDotKkt::SCORE_ROW_BLOCK_A2);
+        const uint64_t scoreWaves = CeilDiv(scoreBlockTaskNum, abc.usedAicNum);
+        abc.scoreGroupBatch =
+            std::max<uint64_t>(1, std::min<uint64_t>(NsChunkScaledDotKkt::SCORE_WORKSPACE_HEAD_BATCH, scoreWaves));
+        abc.scoreWorkspaceBytes =
+            AlignUp(abc.usedAivNum * NsChunkScaledDotKkt::SCORE_WORKSPACE_BUFFER_NUM *
+                        NsChunkScaledDotKkt::SCORE_WORKSPACE_HEAD_BATCH * abc.BT * abc.BT * sizeof(float),
+                    WORKSPACE_ALIGNMENT);
+    } else {
+        abc.scoreGroupBatch = 1;
+        abc.scoreWorkspaceBytes = AlignUp(abc.taskNum * abc.BT * abc.BT * sizeof(float), WORKSPACE_ALIGNMENT);
+    }
     abc.aWorkspaceBytes = AlignUp(
         abc.B * abc.Hv * abc.T * abc.BT * sizeof(uint16_t), WORKSPACE_ALIGNMENT);
     if (abc.BT == 64 && !isVarlen) {
@@ -318,10 +336,10 @@ ge::graphStatus Tiling4ChunkGdnCoreFwd(gert::TilingContext *context)
     context->SetTilingKey(vDim == SUPPORTED_V_DIM_256 ? TILING_KEY_V256 : TILING_KEY_V128);
     context->SetScheduleMode(1);
     OP_LOGD(context->GetNodeName(),
-            "Phase 6 tiling: B=%ld, Hk=%ld, Hv=%ld, T=%ld, K=%ld, V=%ld, blocks=%lu, tasks=%lu, suffix=%zu, total=%zu.",
-            batch, heads, valueHeads, tokens, kDim, vDim,
-            aicCoreNum, abc.taskNum, workspaceSizes[0] - systemWorkspace,
-            workspaceSizes[0]);
+            "Phase 6 tiling: B=%ld, Hk=%ld, Hv=%ld, T=%ld, K=%ld, V=%ld, blocks=%lu, tasks=%lu, fastAbc=%lu, "
+            "suffix=%zu, total=%zu.",
+            batch, heads, valueHeads, tokens, kDim, vDim, aicCoreNum, abc.taskNum, abc.usePipelinedAbc,
+            workspaceSizes[0] - systemWorkspace, workspaceSizes[0]);
     return ge::GRAPH_SUCCESS;
 }
 

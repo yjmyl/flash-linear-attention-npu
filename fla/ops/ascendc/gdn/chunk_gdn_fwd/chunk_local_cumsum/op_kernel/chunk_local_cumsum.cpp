@@ -197,7 +197,28 @@ public:
         GetTPipePtr()->ReleaseEventID<HardEvent::MTE3_V>(mte3ToVEvent_);
     }
 
+    __aicore__ inline void ConfigureWorkerRange(int64_t workerIndex, int64_t workerCount)
+    {
+        workerIndex_ = workerIndex;
+        workerCount_ = workerCount;
+    }
+
+    __aicore__ inline void ResetPipe()
+    {
+        pipe_.Reset();
+    }
+
 private:
+    __aicore__ inline int64_t WorkerIndex() const
+    {
+        return workerIndex_ >= 0 ? workerIndex_ : static_cast<int64_t>(GetBlockIdx());
+    }
+
+    __aicore__ inline int64_t WorkerCount() const
+    {
+        return workerCount_ > 0 ? workerCount_ : static_cast<int64_t>(GetBlockNum());
+    }
+
     __aicore__ inline void WaitVToMte3()
     {
         SetFlag<HardEvent::V_MTE3>(vToMte3Event_);
@@ -693,8 +714,8 @@ private:
 
     __aicore__ inline void ProcessFixed()
     {
-        int64_t blockNum = static_cast<int64_t>(GetBlockNum());
-        int64_t blockIdx = static_cast<int64_t>(GetBlockIdx());
+        int64_t blockNum = WorkerCount();
+        int64_t blockIdx = WorkerIndex();
         int64_t chunkNum = CeilDivInt64(tiling_->t, tiling_->chunkSize);
         int64_t hTileSize = chunkFastPath_ ? fastHTileSize_ : H_TILE_SIZE;
         int64_t hTileNum = CeilDivInt64(tiling_->h, hTileSize);
@@ -717,8 +738,8 @@ private:
 
     __aicore__ inline void ProcessVarlen()
     {
-        int64_t blockNum = static_cast<int64_t>(GetBlockNum());
-        int64_t blockIdx = static_cast<int64_t>(GetBlockIdx());
+        int64_t blockNum = WorkerCount();
+        int64_t blockIdx = WorkerIndex();
         int64_t hTileSize = chunkFastPath_ ? fastHTileSize_ : H_TILE_SIZE;
         int64_t hTileNum = CeilDivInt64(tiling_->h, hTileSize);
         if constexpr (std::is_same<GType, float>::value && std::is_same<OType, float>::value) {
@@ -788,9 +809,12 @@ private:
     bool headFirstPipeline_ = false;
     TEventID vToMte3Event_;
     TEventID mte3ToVEvent_;
+    int64_t workerIndex_ = -1;
+    int64_t workerCount_ = 0;
 };
 } // namespace
 
+#ifndef GDN_CHUNK_LOCAL_CUMSUM_IMPL_ONLY
 extern "C" __global__ __aicore__ void chunk_local_cumsum(GM_ADDR g, GM_ADDR cuSeqlens, GM_ADDR chunkIndices,
                                                           GM_ADDR out, GM_ADDR workspace, GM_ADDR tiling)
 {
@@ -835,3 +859,4 @@ extern "C" __global__ __aicore__ void chunk_local_cumsum(GM_ADDR g, GM_ADDR cuSe
         op.Process();
     }
 }
+#endif

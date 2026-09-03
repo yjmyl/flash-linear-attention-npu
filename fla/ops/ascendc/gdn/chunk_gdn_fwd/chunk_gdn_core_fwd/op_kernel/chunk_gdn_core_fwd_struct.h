@@ -24,6 +24,8 @@ struct ChunkGdnCoreFwdAbcTiling {
     uint64_t usedAivNum;
     uint64_t btAlign;
     uint64_t isVarlen;
+    uint64_t usePipelinedAbc;
+    uint64_t scoreGroupBatch;
     uint64_t scoreWorkspaceBytes;
     uint64_t aWorkspaceBytes;
     uint64_t solveWorkspacePerCoreBytes;
