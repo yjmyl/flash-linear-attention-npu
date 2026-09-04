@@ -4,9 +4,10 @@
  *
  * FP32 implementation for the 64 x 64 solve_tri path.
  *
- * The AIC performs only native FP32 GEMMs. The paired AIV cores prepare and
- * update the MCH blocks, assemble the two sparse block-inverse merges, and
- * cast the final 64 x 64 result back to the input dtype.
+ * The paired AIV cores solve the four 16 x 16 diagonal leaves with an FP32
+ * forward recurrence, assemble the two sparse block-inverse merges, and cast
+ * the final 64 x 64 result back to the input dtype. The AIC performs only the
+ * native FP32 GEMMs required by the 16->32 and 32->64 merges.
  */
 #ifndef SOLVE_TRI_FP32_H
 #define SOLVE_TRI_FP32_H
@@ -39,9 +40,9 @@ constexpr int32_t FP32_MATRIX_STRIDE = FP32_MATRIX_SIZE;
 constexpr int32_t FP32_SLOT_ELEMS = FP32_MATRIX_SIZE * FP32_MATRIX_STRIDE;
 constexpr int32_t FP32_WORKSPACE_SLOTS = 4;
 
-constexpr int32_t FP32_SLOT_X = 0;       // MCH input A, then the running inverse X
-constexpr int32_t FP32_SLOT_Y = 1;       // running power Y, then merge temporary Y
-constexpr int32_t FP32_SLOT_TMP = 2;     // GEMM output
+constexpr int32_t FP32_SLOT_X = 0;       // direct-solved leaves, then the running inverse X
+constexpr int32_t FP32_SLOT_Y = 1;       // second merge GEMM output
+constexpr int32_t FP32_SLOT_TMP = 2;     // first merge GEMM output
 constexpr int32_t FP32_SLOT_MNEG = 3;    // full -M
 
 // Two independent ready/free pairs. The reverse flag prevents a producer from
@@ -289,25 +290,9 @@ public:
         BlockMmad blockMmad(resource);
 
         for (int64_t tileIdx = startTile; tileIdx < endTile; ++tileIdx) {
+            // The paired AIV cores publish all four direct-solved 16 x 16
+            // leaves and the full -A matrix before the first merge.
             WaitAiv();
-
-            // MCH initialization: Y=A^2. AIV converts A to X=I-A afterwards.
-            RunMchGemm(blockMmad, FP32_SLOT_X, FP32_SLOT_X, FP32_SLOT_Y);
-            SignalAiv();
-            WaitAiv();
-
-            // X <- X + X*Y, Y <- Y*Y. Three iterations invert each 16x16 MCH block.
-            for (int32_t iter = 0; iter < 3; ++iter) {
-                RunMchGemm(blockMmad, FP32_SLOT_X, FP32_SLOT_Y, FP32_SLOT_TMP);
-                SignalAiv();
-                WaitAiv();
-
-                if (iter < 2) {
-                    RunMchGemm(blockMmad, FP32_SLOT_Y, FP32_SLOT_Y, FP32_SLOT_TMP);
-                    SignalAiv();
-                    WaitAiv();
-                }
-            }
 
             // Merge 16->32 and 32->64. AIV produces the D/O selected matrices.
             for (int32_t blockSize = 16; blockSize < FP32_MATRIX_SIZE; blockSize *= 2) {
@@ -369,33 +354,6 @@ private:
             tensorC, tla::MakeCoord(rowC, colC),
             tla::MakeShape(actualShape.m(), actualShape.n()));
         blockMmad(blockA, blockB, blockC, actualShape);
-    }
-
-    template <typename BlockMmad>
-    __aicore__ inline void RunMchGemm(
-        BlockMmad& blockMmad, int32_t slotA, int32_t slotB, int32_t slotC)
-    {
-        RunDenseGemm(blockMmad, slotA, slotB, slotC);
-    }
-
-    template <typename BlockMmad>
-    __aicore__ inline void RunDenseGemm(
-        BlockMmad& blockMmad, int32_t slotA, int32_t slotB, int32_t slotC)
-    {
-        RunGemmRegion(
-            blockMmad,
-            slotA,
-            slotB,
-            slotC,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            FP32_MATRIX_SIZE,
-            FP32_MATRIX_SIZE,
-            FP32_MATRIX_SIZE);
     }
 
     template <typename BlockMmad>
@@ -608,22 +566,6 @@ public:
             PrepareInput(gmOffset, validSize);
             SignalAic();
 
-            WaitAic();
-            InitX(validSize);
-            SignalAic();
-
-            for (int32_t iter = 0; iter < 3; ++iter) {
-                WaitAic();
-                AddProductToX();
-                SignalAic();
-
-                if (iter < 2) {
-                    WaitAic();
-                    CopySlot(FP32_SLOT_TMP, FP32_SLOT_Y);
-                    SignalAic();
-                }
-            }
-
             for (int32_t blockSize = 16; blockSize < FP32_MATRIX_SIZE; blockSize *= 2) {
                 SignalAic();
 
@@ -783,61 +725,66 @@ private:
         Cast(fp32LocalA_, inputLocal_, RoundMode::CAST_NONE, STRIP_ELEMS);
         PipeBarrier<PIPE_V>();
         Muls(fp32LocalB_, fp32LocalA_, -1.0f, STRIP_ELEMS);
-        Duplicate(fp32LocalC_, 0.0f, STRIP_ELEMS);
-        PipeBarrier<PIPE_V>();
-
-        // Keep only the four 16x16 diagonal blocks for MCH.
-        for (int32_t localRow = 0; localRow < STRIP_ROWS; ++localRow) {
-            int32_t globalRow = rowBegin_ + localRow;
-            int32_t diagonalBlockStart = (globalRow / 16) * 16;
-            Adds(
-                fp32LocalC_[localRow * FP32_MATRIX_SIZE + diagonalBlockStart],
-                fp32LocalA_[localRow * FP32_MATRIX_SIZE + diagonalBlockStart],
-                0.0f,
-                16);
-        }
-        PipeBarrier<PIPE_V>();
-
-        StoreSlot(FP32_SLOT_X, fp32LocalC_);
         StoreSlot(FP32_SLOT_MNEG, fp32LocalB_);
+        SolveDiagonalLeaves(validSize);
+        StoreSlot(FP32_SLOT_X, fp32LocalC_);
     }
 
-    __aicore__ inline void InitX(int64_t validSize)
+    __aicore__ inline void ForwardSubDiag16(
+        const LocalTensor<float>& leaf,
+        const LocalTensor<float>& row,
+        const LocalTensor<float>& product,
+        const LocalTensor<float>& rowBroadcast,
+        const LocalTensor<float>& reduced,
+        int32_t validRows)
     {
-        LoadSlot(FP32_SLOT_X, fp32LocalA_);
-        Muls(fp32LocalA_, fp32LocalA_, -1.0f, STRIP_ELEMS);
-        BuildIdentity(fp32LocalB_, validSize);
-        Add(fp32LocalA_, fp32LocalA_, fp32LocalB_, STRIP_ELEMS);
-        PipeBarrier<PIPE_V>();
-        StoreSlot(FP32_SLOT_X, fp32LocalA_);
-    }
+        constexpr uint32_t LEAF_SIZE = 16;
+        constexpr uint32_t BRCB_STRIDE = 8;
+        constexpr uint8_t ROW_BLOCKS = LEAF_SIZE * sizeof(float) / 32;
 
-    __aicore__ inline void AddProductToX()
-    {
-        LoadSlot(FP32_SLOT_TMP, fp32LocalA_);
-        LoadSlot(FP32_SLOT_X, fp32LocalB_);
-        Add(fp32LocalA_, fp32LocalA_, fp32LocalB_, STRIP_ELEMS);
-        PipeBarrier<PIPE_V>();
-        StoreSlot(FP32_SLOT_X, fp32LocalA_);
-    }
+        // The strictly-lower inverse satisfies Xoff = -A + (-A) * Xoff.
+        // Row 0 has no off-diagonal entries and row 1 is already exact, so the
+        // recurrence starts at row 2. Brcb avoids scalar coefficient loads in
+        // the hot loop by broadcasting the complete source row in two groups.
+        for (int32_t rowIdx = 2; rowIdx < validRows; ++rowIdx) {
+            uint32_t rowOffset = static_cast<uint32_t>(rowIdx * LEAF_SIZE);
+            DataCopy(row, leaf[rowOffset], LEAF_SIZE);
+            PipeBarrier<PIPE_V>();
 
-    __aicore__ inline void CopySlot(int32_t srcSlot, int32_t dstSlot)
-    {
-        LoadSlot(srcSlot, fp32LocalA_);
-        StoreSlot(dstSlot, fp32LocalA_);
-    }
+            Brcb(rowBroadcast, row, LEAF_SIZE / BRCB_STRIDE, {1, 8});
+            PipeBarrier<PIPE_V>();
+            for (uint32_t col = 0; col < LEAF_SIZE; col += BRCB_STRIDE) {
+                Mul(
+                    product[col],
+                    leaf[col],
+                    rowBroadcast,
+                    BRCB_STRIDE,
+                    static_cast<uint8_t>(LEAF_SIZE),
+                    {1, 1, 0, ROW_BLOCKS, ROW_BLOCKS, 1});
+            }
+            PipeBarrier<PIPE_V>();
 
-    __aicore__ inline void BuildIdentity(
-        const LocalTensor<float>& identity, int64_t validSize)
-    {
-        Duplicate(identity, 0.0f, STRIP_ELEMS);
-        PipeBarrier<PIPE_V>();
-        int32_t rows = LocalValidRows(validSize);
-        for (int32_t localRow = 0; localRow < rows; ++localRow) {
-            int32_t globalRow = rowBegin_ + localRow;
-            uint64_t diagonalMask[1] = {1ULL << globalRow};
+            uint32_t remain = LEAF_SIZE;
+            while (remain > 1) {
+                uint32_t count = (remain / 2) * LEAF_SIZE;
+                remain = (remain + 1) / 2;
+                Add(product, product, product[remain * LEAF_SIZE], count);
+                PipeBarrier<PIPE_V>();
+            }
+            DataCopy(reduced, product, LEAF_SIZE);
+            PipeBarrier<PIPE_V>();
+            Add(row, row, reduced, LEAF_SIZE);
+            PipeBarrier<PIPE_V>();
+            DataCopy(leaf[rowOffset], row, LEAF_SIZE);
+            PipeBarrier<PIPE_V>();
+        }
+
+        // SolveTri inputs are strictly lower triangular. Overwriting their
+        // zero diagonal with one avoids scalar GetValue/SetValue operations.
+        for (int32_t rowIdx = 0; rowIdx < validRows; ++rowIdx) {
+            uint64_t diagonalMask[1] = {1ULL << rowIdx};
             Duplicate(
-                identity[localRow * FP32_MATRIX_SIZE],
+                leaf[rowIdx * LEAF_SIZE],
                 1.0f,
                 diagonalMask,
                 1,
@@ -845,6 +792,59 @@ private:
                 8);
         }
         PipeBarrier<PIPE_V>();
+    }
+
+    __aicore__ inline void SolveDiagonalLeaves(int64_t validSize)
+    {
+        constexpr int32_t LEAF_SIZE = 16;
+        constexpr int32_t LEAF_ELEMS = LEAF_SIZE * LEAF_SIZE;
+        constexpr int32_t BRCB_ELEMS = LEAF_SIZE * 8;
+        constexpr int32_t LEAF_ARENA_ELEMS =
+            LEAF_ELEMS + LEAF_SIZE + LEAF_ELEMS + BRCB_ELEMS + LEAF_SIZE;
+        static_assert(LEAF_ARENA_ELEMS <= STRIP_ELEMS, "FP32 leaf arena exceeds the AIV scratch buffer");
+
+        // MNEG has already been published, so fp32LocalB_ can be reused as a
+        // compact 672-float leaf arena. fp32LocalA_ retains the FP32 input and
+        // fp32LocalC_ becomes the sparse four-leaf X matrix.
+        LocalTensor<float> leaf = fp32LocalB_;
+        LocalTensor<float> row = leaf[LEAF_ELEMS];
+        LocalTensor<float> product = row[LEAF_SIZE];
+        LocalTensor<float> rowBroadcast = product[LEAF_ELEMS];
+        LocalTensor<float> reduced = rowBroadcast[BRCB_ELEMS];
+
+        Duplicate(fp32LocalC_, 0.0f, STRIP_ELEMS);
+        PipeBarrier<PIPE_V>();
+        for (int32_t localBlockRow = 0; localBlockRow < STRIP_ROWS; localBlockRow += LEAF_SIZE) {
+            int32_t globalBlockBegin = static_cast<int32_t>(rowBegin_) + localBlockRow;
+            int64_t remaining = validSize - globalBlockBegin;
+            int32_t validRows = 0;
+            if (remaining > 0) {
+                validRows = (remaining >= LEAF_SIZE) ? LEAF_SIZE : static_cast<int32_t>(remaining);
+            }
+
+            Duplicate(leaf, 0.0f, LEAF_ELEMS);
+            PipeBarrier<PIPE_V>();
+            for (int32_t rowIdx = 0; rowIdx < LEAF_SIZE; ++rowIdx) {
+                Muls(
+                    leaf[rowIdx * LEAF_SIZE],
+                    fp32LocalA_[
+                        (localBlockRow + rowIdx) * FP32_MATRIX_SIZE + globalBlockBegin],
+                    -1.0f,
+                    LEAF_SIZE);
+            }
+            PipeBarrier<PIPE_V>();
+
+            ForwardSubDiag16(leaf, row, product, rowBroadcast, reduced, validRows);
+            for (int32_t rowIdx = 0; rowIdx < LEAF_SIZE; ++rowIdx) {
+                Adds(
+                    fp32LocalC_[
+                        (localBlockRow + rowIdx) * FP32_MATRIX_SIZE + globalBlockBegin],
+                    leaf[rowIdx * LEAF_SIZE],
+                    0.0f,
+                    LEAF_SIZE);
+            }
+            PipeBarrier<PIPE_V>();
+        }
     }
 
     __aicore__ inline void CastAndStore(int64_t gmOffset, int64_t validSize)

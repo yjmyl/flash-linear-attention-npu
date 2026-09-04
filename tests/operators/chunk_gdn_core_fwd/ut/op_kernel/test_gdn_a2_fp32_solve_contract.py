@@ -48,6 +48,26 @@ def test_fp32_solver_preserves_fp32_workspace_and_full_tail_rows():
     assert "Cast(inputLocal_, fp32LocalA_, RoundMode::CAST_RINT" in header
 
 
+def test_fp32_solver_uses_vector_leaf_recurrence_and_keeps_cube_merges():
+    header = (SOLVE_DIR / "op_kernel/solve_tri_fp32.h").read_text(encoding="utf-8")
+    leaf_recurrence = header.split("__aicore__ inline void ForwardSubDiag16", 1)[1].split(
+        "__aicore__ inline void SolveDiagonalLeaves", 1
+    )[0]
+
+    assert "SolveDiagonalLeaves(validSize);" in header
+    assert "Brcb(rowBroadcast, row" in leaf_recurrence
+    assert "Mul(" in leaf_recurrence
+    assert "while (remain > 1)" in leaf_recurrence
+    assert "GetValue(" not in leaf_recurrence
+    assert "SetValue(" not in leaf_recurrence
+    assert "RunMchGemm" not in header
+    assert "InitX(" not in header
+    assert "AddProductToX(" not in header
+    assert "static_assert(LEAF_ARENA_ELEMS <= STRIP_ELEMS" in header
+    assert "RunMergeFirstGemm(blockMmad, blockSize);" in header
+    assert "RunMergeSecondGemm(blockMmad, blockSize);" in header
+
+
 def test_fused_dense_chunk64_routes_to_fp32_with_old_fallback_retained():
     kernel = FUSED_SOLVE.read_text(encoding="utf-8")
 
