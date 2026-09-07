@@ -53,6 +53,13 @@ struct ChunkGdnCoreFwdTrailer {
     uint64_t aWorkspaceOffset;
     uint64_t solveWorkspaceOffset;
     uint64_t gCumsumBhtOffset;
+    // A2 内部实现信息，由 host tiling 推导，不增加 L0 输入或属性。
+    uint64_t useTritonSolve;
+    uint64_t solveSequenceCount;
+    uint64_t solveFp32InputOffset;
+    uint64_t solveD16Offset;
+    uint64_t solveD32Offset;
+    uint64_t solveD64Offset;
 };
 
 } // namespace GDN

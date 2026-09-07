@@ -17,6 +17,9 @@
 #undef GDN_CHUNK_LOCAL_CUMSUM_IMPL_ONLY
 
 #include "../../chunk_scaled_dot_kkt/op_kernel/chunk_scaled_dot_kkt.h"
+#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 220
+#include "solve_tri_pipeline_a2.h"
+#endif
 
 namespace GDN {
 namespace {
@@ -326,21 +329,49 @@ __aicore__ inline void RunPhase6(
         }
     }
 
-    if (abc.BT == 64) {
-        RunSolvePhase<InputT, 64>(aWorkspace, cuSeqlens, chunkIndices, A,
-                                  solveWorkspace, &abc);
-    } else {
-        RunSolvePhase<InputT, 128>(aWorkspace, cuSeqlens, chunkIndices, A,
-                                   solveWorkspace, &abc);
-    }
-    // Solve and recompute share a contiguous task range. Publish solved A
-    // before either paired AIV enters its local consumer range.
-    if ASCEND_IS_AIC {
-        AscendC::CrossCoreSetFlag<0x2, PIPE_FIX>(PHASE6_SOLVE_DONE_FLAG);
-    }
-    if ASCEND_IS_AIV {
-        AscendC::CrossCoreWaitFlag(PHASE6_SOLVE_DONE_FLAG);
-    }
+#if defined(__CCE_AICORE__) && __CCE_AICORE__ == 220
+    if (phase6->useTritonSolve != 0) {
+        // 公共及 KKT 存储始终 BNSD，varlen 只改变序列映射，不转置。
+        GdnTritonSolve::FullProblem problem{
+            static_cast<int64_t>(abc.B), static_cast<int64_t>(abc.T),
+            static_cast<int64_t>(abc.Hv), static_cast<int64_t>(abc.BT), 1,
+            static_cast<int64_t>(phase6->solveSequenceCount), 32, 0, 0, 0, 0};
+        if (problem.sequences == 0) {
+            problem.tasks32 = (problem.tokens + 31) / 32 * problem.batch * problem.heads;
+            problem.tasks64 = (problem.tokens + 63) / 64 * problem.batch * problem.heads;
+            problem.tasks128 = (problem.tokens + 127) / 128 * problem.batch * problem.heads;
+        } else {
+            AscendC::GlobalTensor<int64_t> solveCu;
+            solveCu.SetGlobalBuffer(reinterpret_cast<__gm__ int64_t *>(cuSeqlens));
+            for (int64_t sequence = 0; sequence < problem.sequences; ++sequence) {
+                const int64_t length = solveCu.GetValue(sequence + 1) - solveCu.GetValue(sequence);
+                problem.tasks32 += (length + 31) / 32 * problem.heads;
+                problem.tasks64 += (length + 63) / 64 * problem.heads;
+                problem.tasks128 += (length + 127) / 128 * problem.heads;
+            }
+        }
+        GdnTritonSolve::Run<InputT, InputT>(
+            aWorkspace, userWorkspace + phase6->solveFp32InputOffset,
+            userWorkspace + phase6->solveD16Offset, userWorkspace + phase6->solveD32Offset,
+            userWorkspace + phase6->solveD64Offset, A, solveWorkspaceBase, cuSeqlens, problem);
+    } else
+#endif
+    {
+        if (abc.BT == 64) {
+            RunSolvePhase<InputT, 64>(aWorkspace, cuSeqlens, chunkIndices, A,
+                                      solveWorkspace, &abc);
+        } else {
+            RunSolvePhase<InputT, 128>(aWorkspace, cuSeqlens, chunkIndices, A,
+                                       solveWorkspace, &abc);
+        }
+        // 旧模板的 Solve 与 recompute 共享连续 task 区间，由 AIC 发布输出。
+        if ASCEND_IS_AIC {
+            AscendC::CrossCoreSetFlag<0x2, PIPE_FIX>(PHASE6_SOLVE_DONE_FLAG);
+        }
+        if ASCEND_IS_AIV {
+            AscendC::CrossCoreWaitFlag(PHASE6_SOLVE_DONE_FLAG);
+        }
+    } // 旧架构内部模板；新版 A2 的 AIV/MTE3 输出已由 Run 的 mixed 边界发布。
     GM_ADDR w = userWorkspace + phase5->wIntermediateOffset;
     GM_ADDR u = userWorkspace + phase5->uIntermediateOffset;
     GM_ADDR h = userWorkspace + phase5->hIntermediateOffset;

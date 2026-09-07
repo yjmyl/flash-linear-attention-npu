@@ -33,7 +33,8 @@ recompute work over `chunk x value_head`; `w/u/h/v_new` remain internal
 workspace hand-offs rather than public executor tensors. Phase 6 additionally
 combines the cumulative ABC prefix and the DEF suffix in one MIX kernel. It uses
 owner-complete rows for the public BTH `gCumsumOut` and keeps ABC/recompute tasks
-on the same AIC without an outer full-core barrier. All fixed entries share the same public tensor contract and are
+on the same AIC in the original internal template. The A2 FP32 pipeline template
+instead closes cross-group SolveTri hand-offs with mixed-core barriers. All fixed entries share the same public tensor contract and are
 exported by the same package so they can be compared without reinstalling a
 different wheel.
 
@@ -132,3 +133,18 @@ unversioned alias stays on Phase 2 until a separate default-entry decision.
 
 The public wrapper is eager-only. The forward's existing Python autograd wrapper
 continues to use the established GDN backward chain.
+
+## A2 内部 SolveTri 流水
+
+Phase6 在 A2 内部使用 FP32 的 16×16 叶子递推及分块 GEMM 合并，支持原有
+FP16/BF16、BT64/128 和 dense/varlen 路径。KKT 输入量化和 A 输出量化点保持不变。
+KKT 中间量与 A 均按 BNSD 存取，不增加 BSND/BNSD 转置或新的 L0 接口。
+这不改变 `gdn_core_fwd` 的默认 Phase2 路径，也不改变其他 SOC 的 L0 契约。
+
+首版将 FP32 输入、D16、D32 及 BT128 所需的 D64 放入 workspace，并在阶段交接处
+使用 mixed 全核同步。额外中间量字节数为 `B*Hv*T*(BT+16+32+(BT==128?64:0))*4`，
+另计对齐和每 AIC 的 GEMM scratch（BT64 为 192 KiB，BT128 为 544 KiB）。
+调用方应始终按 `GetWorkspaceSize` 返回值分配，不能复用旧版本硬编码容量。
+
+该内部路径的完整 Phase6 精度、性能及资源成本须按当前二进制重新验收；单独
+SolveTri 的测试结论不代表 `o`、`final_state` 或完整模型端到端已经通过。

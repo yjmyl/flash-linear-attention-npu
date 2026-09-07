@@ -266,7 +266,15 @@ ge::graphStatus Tiling4ChunkGdnCoreFwd(gert::TilingContext *context)
     }
     abc.aWorkspaceBytes = AlignUp(
         abc.B * abc.Hv * abc.T * abc.BT * sizeof(uint16_t), WORKSPACE_ALIGNMENT);
-    if (abc.BT == 64 && !isVarlen) {
+    trailer.useTritonSolve = isAscend910B && npuArch == NpuArch::DAV_2201 ? 1 : 0;
+    trailer.solveSequenceCount = isVarlen ? cuShape->GetStorageShape().GetDim(0) - 1 : 0;
+    if (trailer.useTritonSolve != 0) {
+        // S16/S32: 16 个第一 GEMM 临时槽 + 16x2 输出 ring；S64: 2+16x2。
+        const uint64_t merge64Slots = 48 * 32 * 32;
+        const uint64_t merge128Slots = abc.BT == CHUNK_128 ? 34 * 64 * 64 : 0;
+        abc.solveWorkspacePerCoreBytes = AlignUp(
+            std::max(merge64Slots, merge128Slots) * sizeof(float), WORKSPACE_ALIGNMENT);
+    } else if (abc.BT == 64 && !isVarlen) {
         constexpr uint64_t fp32WorkspaceSlots = 4;
         abc.solveWorkspacePerCoreBytes = AlignUp(
             fp32WorkspaceSlots * abc.BT * abc.BT * sizeof(float), WORKSPACE_ALIGNMENT);
@@ -308,6 +316,21 @@ ge::graphStatus Tiling4ChunkGdnCoreFwd(gert::TilingContext *context)
     workspaceOffset += aicCoreNum * abc.solveWorkspacePerCoreBytes;
     trailer.gCumsumBhtOffset = workspaceOffset;
     workspaceOffset += AlignUp(abc.B * abc.Hv * abc.T * sizeof(float), WORKSPACE_ALIGNMENT);
+    if (trailer.useTritonSolve != 0) {
+        // 首版保留独立的 FP32 数据版本；跨阶段只复用已 drain 的 scratch。
+        const uint64_t rows = abc.B * abc.Hv * abc.T;
+        trailer.solveFp32InputOffset = workspaceOffset;
+        workspaceOffset += AlignUp(rows * abc.BT * sizeof(float), WORKSPACE_ALIGNMENT);
+        trailer.solveD16Offset = workspaceOffset;
+        workspaceOffset += AlignUp(rows * 16 * sizeof(float), WORKSPACE_ALIGNMENT);
+        trailer.solveD32Offset = workspaceOffset;
+        workspaceOffset += AlignUp(rows * 32 * sizeof(float), WORKSPACE_ALIGNMENT);
+        trailer.solveD64Offset = trailer.solveD32Offset;
+        if (abc.BT == CHUNK_128) {
+            trailer.solveD64Offset = workspaceOffset;
+            workspaceOffset += AlignUp(rows * 64 * sizeof(float), WORKSPACE_ALIGNMENT);
+        }
+    }
     workspaceSizes[0] = systemWorkspace + workspaceOffset;
 
     ChunkGatedDeltaRuleFwdHTilingData hTiling;
