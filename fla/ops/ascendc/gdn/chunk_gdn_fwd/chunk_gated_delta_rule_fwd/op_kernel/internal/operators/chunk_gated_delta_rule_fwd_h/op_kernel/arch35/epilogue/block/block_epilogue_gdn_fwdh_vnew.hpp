@@ -217,11 +217,17 @@ public:
         uint32_t cols)
     {
         __ubuf__ float *dstAddr = reinterpret_cast<__ubuf__ float *>(dst.GetPhyAddr());
-        __ubuf__ float *srcAddr = reinterpret_cast<__ubuf__ float *>(src.GetPhyAddr());
         __ubuf__ float *rowScaleAddr = reinterpret_cast<__ubuf__ float *>(rowScale.GetPhyAddr());
-        AscendC::VF_CALL<detail::ApplyRowScaleDualIssue>(
-            dstAddr, srcAddr, rowScaleAddr, rowScaleOffset,
-            static_cast<uint16_t>(rows), static_cast<uint16_t>(cols));
+        if constexpr (KGatedTag::updateEventOnly) {
+            __ubuf__ float *srcAddr = reinterpret_cast<__ubuf__ float *>(src.GetPhyAddr());
+            AscendC::VF_CALL<detail::ApplyRowScaleFromWorkspaceDualIssue>(
+                dstAddr, srcAddr, rowScaleAddr, rowScaleOffset,
+                static_cast<uint16_t>(rows), static_cast<uint16_t>(cols));
+        } else {
+            AscendC::VF_CALL<detail::ApplyRowScaleDualIssue>(
+                dstAddr, rowScaleAddr, rowScaleOffset,
+                static_cast<uint16_t>(rows), static_cast<uint16_t>(cols));
+        }
         AscendC::PipeBarrier<PIPE_V>();
     }
 
@@ -360,6 +366,9 @@ public:
             if constexpr (scalarGated) {
                 AscendC::Sub<float>(wsUbTensor, calcUbTensor, wsUbTensor, mActualThisSubBlock * nvActual);
                 AscendC::PipeBarrier<PIPE_V>();
+                if constexpr (!KGatedTag::updateEventOnly) {
+                    AscendC::Copy(calcUbTensor, wsUbTensor, mActualThisSubBlock * nvActual);
+                }
                 AscendC::PipeBarrier<PIPE_V>();
                 ApplyRowScale(calcUbTensor, wsUbTensor, gUbTensor, rowBegin, mActualThisSubBlock, nvActual);
             } else {
@@ -471,6 +480,9 @@ public:
             if constexpr (scalarGated) {
                 AscendC::Sub<float>(wsUbTensorThisTile, calcUbTensor, wsUbTensorThisTile, rowsThisTile * nvActual);
                 AscendC::PipeBarrier<PIPE_V>();
+                if constexpr (!KGatedTag::updateEventOnly) {
+                    AscendC::Copy(calcUbTensor, wsUbTensorThisTile, rowsThisTile * nvActual);
+                }
                 AscendC::PipeBarrier<PIPE_V>();
                 ApplyRowScale(calcUbTensor, wsUbTensorThisTile, gUbTensor, rowStart, rowsThisTile, nvActual);
             } else {
