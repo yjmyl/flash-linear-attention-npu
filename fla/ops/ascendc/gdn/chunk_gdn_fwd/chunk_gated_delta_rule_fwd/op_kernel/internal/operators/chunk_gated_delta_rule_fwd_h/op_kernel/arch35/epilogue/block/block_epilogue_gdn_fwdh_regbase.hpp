@@ -164,7 +164,7 @@ static __simd_vf__ inline void ApplyKGateUpdateRegbaseDualIssue(
 }
 
 static __simd_vf__ inline void ApplyRowScaleDualIssue(
-    __ubuf__ float *matrix, __ubuf__ float *rowScale, uint32_t rowScaleOffset,
+    __ubuf__ float *dst, __ubuf__ float *src, __ubuf__ float *rowScale, uint32_t rowScaleOffset,
     uint16_t rows, uint16_t cols)
 {
     using namespace AscendC::MicroAPI;
@@ -188,12 +188,12 @@ static __simd_vf__ inline void ApplyRowScaleDualIssue(
             uint32_t col = static_cast<uint32_t>(colLoop) * FP32_PER_REG;
             mask0 = UpdateMask<float>(remaining0);
             mask1 = UpdateMask<float>(remaining1);
-            LoadAlign(matrixReg0, matrix + static_cast<uint32_t>(row) * cols + col);
-            LoadAlign(matrixReg1, matrix + static_cast<uint32_t>(row + 1) * cols + col);
+            LoadAlign(matrixReg0, src + static_cast<uint32_t>(row) * cols + col);
+            LoadAlign(matrixReg1, src + static_cast<uint32_t>(row + 1) * cols + col);
             Mul(matrixReg0, matrixReg0, scaleReg0, mask0);
             Mul(matrixReg1, matrixReg1, scaleReg1, mask1);
-            StoreAlign(matrix + static_cast<uint32_t>(row) * cols + col, matrixReg0, mask0);
-            StoreAlign(matrix + static_cast<uint32_t>(row + 1) * cols + col, matrixReg1, mask1);
+            StoreAlign(dst + static_cast<uint32_t>(row) * cols + col, matrixReg0, mask0);
+            StoreAlign(dst + static_cast<uint32_t>(row + 1) * cols + col, matrixReg1, mask1);
         }
     }
 
@@ -204,9 +204,9 @@ static __simd_vf__ inline void ApplyRowScaleDualIssue(
         for (uint16_t colLoop = 0; colLoop < colLoops; ++colLoop) {
             uint32_t col = static_cast<uint32_t>(colLoop) * FP32_PER_REG;
             mask0 = UpdateMask<float>(remaining);
-            LoadAlign(matrixReg0, matrix + static_cast<uint32_t>(row) * cols + col);
+            LoadAlign(matrixReg0, src + static_cast<uint32_t>(row) * cols + col);
             Mul(matrixReg0, matrixReg0, scaleReg0, mask0);
-            StoreAlign(matrix + static_cast<uint32_t>(row) * cols + col, matrixReg0, mask0);
+            StoreAlign(dst + static_cast<uint32_t>(row) * cols + col, matrixReg0, mask0);
         }
     }
 }

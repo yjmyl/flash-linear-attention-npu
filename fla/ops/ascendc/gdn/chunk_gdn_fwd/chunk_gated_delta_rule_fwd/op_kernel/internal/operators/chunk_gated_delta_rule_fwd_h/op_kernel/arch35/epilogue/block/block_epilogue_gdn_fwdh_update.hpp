@@ -155,7 +155,7 @@ public:
         __ubuf__ float *matrixAddr = reinterpret_cast<__ubuf__ float *>(matrix.GetPhyAddr());
         __ubuf__ float *rowScaleAddr = reinterpret_cast<__ubuf__ float *>(rowScale.GetPhyAddr());
         AscendC::VF_CALL<detail::ApplyRowScaleDualIssue>(
-            matrixAddr, rowScaleAddr, 0,
+            matrixAddr, matrixAddr, rowScaleAddr, 0,
             static_cast<uint16_t>(rows), static_cast<uint16_t>(cols));
         AscendC::PipeBarrier<PIPE_V>();
     }
